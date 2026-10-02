@@ -62,6 +62,76 @@ test("config init writes a private XDG-style file", () => {
   assert.equal(tokens, undefined)
 })
 
+const failure = (result: ReturnType<typeof runCli>) =>
+  JSON.parse(result.stderr) as { error: string; message: string }
+
+test("missing profile and bad base URLs are typed CLI errors", () => {
+  const directory = mkdtempSync(join(tmpdir(), "upim-"))
+  const config = join(directory, "config.json")
+  const missing = runCli(["--config", config, "auth", "status", "--json"], {
+    UPIM_PROFILE: "",
+    UPIM_BASE_URL: ""
+  })
+  assert.equal(missing.status, 1, missing.stderr)
+  assert.equal(failure(missing).error, "ConfigError")
+  assert.match(failure(missing).message, /not configured/)
+  assert.doesNotMatch(missing.stderr, /Defect/)
+
+  const init = runCli([
+    "--config",
+    config,
+    "config",
+    "init",
+    "--non-interactive",
+    "--base-url",
+    "https://pim.example.com",
+    "--client-id",
+    "id",
+    "--client-secret",
+    "secret",
+    "--username",
+    "robot",
+    "--password",
+    "pw"
+  ], { UPIM_PROFILE: "", UPIM_BASE_URL: "" })
+  assert.equal(init.status, 0, init.stderr)
+
+  const malformed = runCli(["--config", config, "--base-url", "not a url", "auth", "status", "--json"], {
+    UPIM_PROFILE: "",
+    UPIM_BASE_URL: ""
+  })
+  assert.equal(malformed.status, 1, malformed.stderr)
+  assert.equal(failure(malformed).error, "UsageError")
+  assert.match(failure(malformed).message, /absolute http or https URL/)
+
+  const scheme = runCli(["--config", config, "--base-url", "ftp://files.example.com", "auth", "status", "--json"], {
+    UPIM_PROFILE: "",
+    UPIM_BASE_URL: ""
+  })
+  assert.equal(scheme.status, 1, scheme.stderr)
+  assert.equal(failure(scheme).error, "UsageError")
+  assert.match(failure(scheme).message, /http or https/)
+
+  const before = readFileSync(config, "utf8")
+  const setScheme = runCli(["--config", config, "config", "set", "baseUrl", "ftp://files.example.com"], {
+    UPIM_PROFILE: "",
+    UPIM_BASE_URL: ""
+  })
+  assert.equal(setScheme.status, 1, setScheme.stderr)
+  assert.equal(failure(setScheme).error, "UsageError")
+  assert.equal(readFileSync(config, "utf8"), before)
+
+  const selected = runCli(["--config", config, "auth", "status", "--json"], {
+    UPIM_PROFILE: "",
+    UPIM_BASE_URL: "https://override.example.com"
+  })
+  assert.equal(selected.status, 0, selected.stderr)
+  const body = JSON.parse(selected.stdout) as { profile: string; baseUrl: string }
+  assert.equal(body.profile, "default")
+  assert.equal(body.baseUrl, "https://override.example.com")
+  assert.match(readFileSync(config, "utf8"), /https:\/\/pim\.example\.com/)
+})
+
 test("--wizard without a terminal explains why", () => {
   const result = runCli(["--wizard"])
   assert.equal(result.status, 1, result.stderr)

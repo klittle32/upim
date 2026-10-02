@@ -100,6 +100,11 @@ type Globals = {
   readonly config: Option.Option<string>
 }
 
+const requireBaseUrl = (value: string) => Effect.try({
+  try: () => normalizeBaseUrl(value),
+  catch: (error) => new UsageError({ message: error instanceof Error ? error.message : String(error) })
+})
+
 const openSession = (flags: Globals) =>
   Effect.gen(function*() {
     const locations = locationsFrom(optionValue(flags.config))
@@ -112,10 +117,7 @@ const openSession = (flags: Globals) =>
     const override = optionValue(flags.baseUrl)
     const profile: Profile = override === undefined
       ? loaded
-      : { ...loaded, baseUrl: yield* Effect.try({
-        try: () => normalizeBaseUrl(override),
-        catch: (error) => new UsageError({ message: error instanceof Error ? error.message : String(error) })
-      }) }
+      : { ...loaded, baseUrl: yield* requireBaseUrl(override) }
     const tokens = yield* readProfileTokens(locations, name)
     const session: Session = {
       profile,
@@ -354,10 +356,7 @@ const configCommand = Command.make("config").pipe(
             ? promptOr(undefined, label, secret)
             : Effect.fail(new UsageError({ message: `${label} is required with --non-interactive` }))
       const baseUrlInput = yield* take(optionValue(parent.baseUrl) ?? process.env.UPIM_BASE_URL, "Base URL (site root, not /api/v1/rest)")
-      const baseUrl = yield* Effect.try({
-        try: () => normalizeBaseUrl(baseUrlInput),
-        catch: (error) => new UsageError({ message: error instanceof Error ? error.message : String(error) })
-      })
+      const baseUrl = yield* requireBaseUrl(baseUrlInput)
       const clientId = yield* take(optionValue(flags.clientId) ?? process.env.UPIM_CLIENT_ID, "Client ID")
       const clientSecret = yield* take(optionValue(flags.clientSecret) ?? process.env.UPIM_CLIENT_SECRET, "Client secret", true)
       const username = yield* take(optionValue(flags.username) ?? process.env.UPIM_USERNAME, "Username")
@@ -399,7 +398,7 @@ const configCommand = Command.make("config").pipe(
       if (!["baseUrl", "clientId", "clientSecret", "username", "password"].includes(key)) {
         return yield* Effect.fail(new UsageError({ message: `Unknown config key ${key}` }))
       }
-      const value = key === "baseUrl" ? normalizeBaseUrl(flags.value) : flags.value
+      const value = key === "baseUrl" ? yield* requireBaseUrl(flags.value) : flags.value
       const next: ConfigFile = {
         ...config,
         current: config.current ?? name,
