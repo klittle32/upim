@@ -1,0 +1,45 @@
+{
+  "name": "upim",
+  "version": "0.1.0",
+  "description": "Command-line client for the UnoPim 3.1 REST API, with OAuth, an agent-readable field contract, and an installable skill.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/klittle32/upim.git"
+  },
+  "homepage": "https://github.com/klittle32/upim#readme",
+  "bugs": {
+    "url": "https://github.com/klittle32/upim/issues"
+  },
+  "type": "module",
+  "bin": {
+    "upim": "./src/main.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "upim": "node src/main.ts",
+    "check": "tsc --noEmit --pretty false",
+    "test": "node --test test/*.test.ts",
+    "journal": "node dev/journal.ts",
+    "prepare": "effect-tsgo patch --typescript --no-oxlint"
+  },
+  "dependencies": {
+    "effect": "4.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.0",
+    "@types/node": "^24.19.1",
+    "typescript": "7.0.2",
+    "@effect/tsgo": "0.47.2"
+  },
+  "license": "MIT"
+}

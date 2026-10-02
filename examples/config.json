@@ -1,0 +1,12 @@
+{
+  "current": "default",
+  "profiles": {
+    "default": {
+      "baseUrl": "https://pim.example.com",
+      "clientId": "client-id",
+      "clientSecret": "client-secret",
+      "username": "api-robot",
+      "password": "optional-robot-password"
+    }
+  }
+}

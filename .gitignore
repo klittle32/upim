@@ -1,0 +1,5 @@
+node_modules/
+.firecrawl/
+.durable/
+*.tsbuildinfo
+.DS_Store
