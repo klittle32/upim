@@ -4,6 +4,12 @@
 
 ## Install
 
+```bash
+npm install -g upim
+```
+
+Node.js 24 or newer is required. The binary is `upim`.
+
 From a checkout:
 
 ```bash
@@ -18,8 +24,6 @@ npm install -g github:klittle32/upim
 pnpm add -g github:klittle32/upim
 bun add -g github:klittle32/upim
 ```
-
-The binary is `upim`.
 
 Install the agent skill into the project you are working in. Pi and other Agent Skills clients discover `.agents/skills/upim`.
 
@@ -164,3 +168,24 @@ npm run journal -- "note about the current milestone"
 ```
 
 `npm run journal` records development notes with `@earendil-works/pi-durable` (and Chord, pi-ai, and the built-in coding tools) in `.durable/`. Those packages are dev-only.
+
+## Releasing
+
+Pushing a `vX.Y.Z` tag publishes that version to npm and opens the GitHub release. The tag name, without the leading `v`, must match `version` in `package.json`. A message longer than the version number becomes the release notes. Otherwise GitHub drafts them from the commits.
+
+```bash
+npm version patch -m "Release %s
+
+- What changed."
+git push origin main --follow-tags
+```
+
+`npm version minor` and `npm version major` work the same way. The working tree has to be clean. The workflow uses npm trusted publishing, so a release does not ask for an npm token or a second login.
+
+The package has to exist before npm will store that link. After the first publish, allow this repository's `release.yml` workflow to run `npm publish` directly:
+
+```bash
+npm trust github upim --file release.yml --repo klittle32/upim --allow-publish
+```
+
+Leave the environment name blank. New trusted publishers otherwise default to staged publishing, which would wait for a manual approval on every release.

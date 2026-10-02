@@ -1,0 +1,97 @@
+# Publishes npm and opens the GitHub release for an annotated vX.Y.Z tag.
+# npm auth is trusted publishing (OIDC). Do not add an NPM_TOKEN.
+# One-time, after the package exists and while logged in:
+#   npm trust github upim --file release.yml --repo klittle32/upim --allow-publish
+# Allow direct npm publish. Leave the environment blank.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Require the tag to match package.json
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${version}."
+            exit 1
+          fi
+
+      - name: Require npm trusted publishing support
+        run: |
+          set -euo pipefail
+          version="$(npm --version)"
+          node --input-type=module -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)))
+            if (!ok) {
+              console.error(`npm ${process.argv[1]} is older than 11.5.1`)
+              process.exit(1)
+            }
+          ' "$version"
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Publish to npm
+        env:
+          # setup-node writes an auth token line. An empty token keeps OIDC in charge.
+          NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_PROVENANCE: "true"
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if npm view "upim@${version}" version >/dev/null 2>&1; then
+            echo "upim@${version} is already on npm"
+          else
+            npm publish --access public
+          fi
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release ${GITHUB_REF_NAME} already exists"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+          note="$(tr -d '[:space:]' < "$RUNNER_TEMP/notes.md")"
+          if [ -n "$note" ] && [ "$note" != "$version" ] && [ "$note" != "v${version}" ] && [ "$note" != "$GITHUB_REF_NAME" ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "upim ${version}" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "upim ${version}" \
+              --generate-notes
+          fi
