@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { call, resetAuthFlight, type Session } from "../src/client.ts"
-import { UsageError } from "../src/errors.ts"
+import { call, login, resetAuthFlight, tokenFlightWaiters, type Session } from "../src/client.ts"
+import { AuthError, UsageError } from "../src/errors.ts"
+import { basicAuthorization } from "../src/oauth.ts"
 import type { TokenSet } from "../src/tokens.ts"
 
 const execute = <A>(fetchImpl: typeof fetch, effect: Effect.Effect<A, unknown, any>) =>
@@ -190,4 +191,181 @@ test("fails when links.next repeats instead of reporting completion", async () =
     }
   )
   assert.equal(hits, 2)
+})
+
+const staleTokens = (refreshToken: string): TokenSet => ({
+  accessToken: "expired",
+  refreshToken,
+  tokenType: "Bearer",
+  expiresAt: 0
+})
+
+const hold = () => {
+  let release: () => void = () => {}
+  let mark: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    mark = resolve
+  })
+  const open = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { started, open, mark, release }
+}
+
+test("shares one token request across overlapping calls for the same session", async () => {
+  resetAuthFlight()
+  const gate = hold()
+  let oauthCalls = 0
+  let saved: TokenSet | undefined
+  const fetchImpl: typeof fetch = async (input) => {
+    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    oauthCalls++
+    gate.mark()
+    await gate.open
+    return new Response(tokenBody("shared"), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const session: Session = {
+    profile,
+    profileName: "default",
+    tokens: staleTokens("refresh-1"),
+    save: (tokens) => Effect.sync(() => {
+      saved = tokens
+    })
+  }
+  const tokens = await execute(fetchImpl, Effect.gen(function*() {
+    const first = yield* Effect.forkChild(login(session))
+    yield* Effect.promise(() => gate.started)
+    const second = yield* Effect.forkChild(login(session))
+    let waiters = 0
+    for (let attempt = 0; attempt < 20 && waiters < 2; attempt++) {
+      yield* Effect.yieldNow
+      waiters = tokenFlightWaiters(session)
+    }
+    gate.release()
+    const tokens = yield* Effect.all([
+      Fiber.join(first),
+      Fiber.join(second)
+    ])
+    return { tokens, waiters }
+  }))
+  assert.equal(tokens.waiters, 2)
+  assert.equal(oauthCalls, 1)
+  assert.equal(tokens.tokens[0].accessToken, "shared")
+  assert.equal(tokens.tokens[1].accessToken, "shared")
+  assert.equal(saved?.accessToken, "shared")
+})
+
+test("does not share token acquisition across sessions", async () => {
+  resetAuthFlight()
+  let pending = 0
+  let release: () => void = () => {}
+  let fail: (error: Error) => void = () => {}
+  const timer = setTimeout(() => fail(new Error("timed out waiting for both sessions")), 1000)
+  const bothStarted = new Promise<void>((resolve, reject) => {
+    release = resolve
+    fail = reject
+  })
+  const seen: string[] = []
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    const authorization = new Headers(init?.headers).get("authorization") ?? ""
+    seen.push(authorization)
+    pending++
+    if (pending === 2) release()
+    await bothStarted
+    const access = authorization === basicAuthorization("client-a", "secret-a") ? "token-a" : "token-b"
+    return new Response(tokenBody(access), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const saved = new Map<string, TokenSet | undefined>()
+  const sessionFor = (name: string, clientId: string, clientSecret: string): Session => ({
+    profile: { ...profile, clientId, clientSecret, password: undefined, username: undefined },
+    profileName: name,
+    tokens: staleTokens(`refresh-${name}`),
+    save: (tokens) => Effect.sync(() => {
+      saved.set(name, tokens)
+    })
+  })
+  const left = sessionFor("left", "client-a", "secret-a")
+  const right = sessionFor("right", "client-b", "secret-b")
+  try {
+    const tokens = await execute(fetchImpl, Effect.all([
+      login(left),
+      login(right)
+    ], { concurrency: 2 }))
+    assert.equal(pending, 2)
+    assert.deepEqual(tokens.map((token) => token.accessToken).sort(), ["token-a", "token-b"])
+    assert.equal(saved.get("left")?.accessToken, "token-a")
+    assert.equal(saved.get("right")?.accessToken, "token-b")
+    assert.equal(new Set(seen).size, 2)
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+test("a failed token acquisition can be retried", async () => {
+  resetAuthFlight()
+  let oauthCalls = 0
+  let saved: TokenSet | undefined
+  const fetchImpl: typeof fetch = async (input) => {
+    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    oauthCalls++
+    if (oauthCalls === 1) return jsonResponse(401, { message: "nope" })
+    return new Response(tokenBody("fresh"), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const session: Session = {
+    profile: { ...profile, password: undefined, username: undefined },
+    profileName: "default",
+    tokens: staleTokens("refresh-1"),
+    save: (tokens) => Effect.sync(() => {
+      saved = tokens
+    })
+  }
+  await assert.rejects(
+    () => execute(fetchImpl, login(session)),
+    (error: unknown) => error instanceof AuthError
+  )
+  const tokens = await execute(fetchImpl, login(session))
+  assert.equal(oauthCalls, 2)
+  assert.equal(tokens.accessToken, "fresh")
+  assert.equal(saved?.accessToken, "fresh")
+})
+
+test("cancelling one overlapping caller leaves the other with the shared token", async () => {
+  resetAuthFlight()
+  const gate = hold()
+  let oauthCalls = 0
+  let saved: TokenSet | undefined
+  const fetchImpl: typeof fetch = async (input) => {
+    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    oauthCalls++
+    gate.mark()
+    await gate.open
+    return new Response(tokenBody("shared"), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const session: Session = {
+    profile: { ...profile, password: undefined, username: undefined },
+    profileName: "default",
+    tokens: staleTokens("refresh-1"),
+    save: (tokens) => Effect.sync(() => {
+      saved = tokens
+    })
+  }
+  const tokens = await execute(fetchImpl, Effect.gen(function*() {
+    const first = yield* Effect.forkChild(login(session))
+    yield* Effect.promise(() => gate.started)
+    const second = yield* Effect.forkChild(login(session))
+    let waiters = 0
+    for (let attempt = 0; attempt < 20 && waiters < 2; attempt++) {
+      yield* Effect.yieldNow
+      waiters = tokenFlightWaiters(session)
+    }
+    if (waiters < 2) gate.release()
+    assert.equal(waiters, 2)
+    yield* Fiber.interrupt(first)
+    gate.release()
+    return yield* Fiber.join(second)
+  }))
+  assert.equal(oauthCalls, 1)
+  assert.equal(tokens.accessToken, "shared")
+  assert.equal(saved?.accessToken, "shared")
 })

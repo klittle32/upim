@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Deferred, Effect, Fiber, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
@@ -40,9 +40,15 @@ const sleep = (ms: number) => Effect.promise(() => new Promise((resolve) => setT
 
 export type HttpClientEnv = HttpClient.HttpClient
 
-let inflight:
-  | Effect.Effect<TokenSet, AuthError | TransportError | ApiError | UsageError, HttpClientEnv>
-  | undefined
+type TokenError = AuthError | TransportError | ApiError | UsageError
+
+type TokenFlight = {
+  readonly deferred: Deferred.Deferred<TokenSet, TokenError>
+  waiters: number
+  fiber?: Fiber.Fiber<boolean, never>
+}
+
+const flights = new Map<Session, TokenFlight>()
 
 const headerValue = (headers: { readonly [key: string]: string }, name: string) => headers[name.toLowerCase()]
 
@@ -171,27 +177,61 @@ const refreshGrant = (session: Session, refreshToken: string) =>
     })
   )
 
-const obtainTokens = (session: Session, force: boolean) => {
-  const run = () => {
+const acquireTokens = (session: Session, force: boolean) => {
+  const current = session.tokens
+  const effect = current?.refreshToken && (!force || current.refreshToken !== "")
+    ? refreshGrant(session, current.refreshToken)
+    : passwordGrant(session)
+  return effect.pipe(Effect.tap((tokens) => {
+    session.tokens = tokens
+    return session.save(tokens)
+  }))
+}
+
+const releaseFlight = (session: Session, flight: TokenFlight) =>
+  Effect.uninterruptible(Effect.gen(function*() {
+    const stop = yield* Effect.sync(() => {
+      flight.waiters--
+      if (flight.waiters > 0) return false
+      if (flights.get(session) === flight) flights.delete(session)
+      return !Deferred.isDoneUnsafe(flight.deferred)
+    })
+    if (!stop) return
+    if (flight.fiber) yield* Fiber.interrupt(flight.fiber)
+    yield* Deferred.interrupt(flight.deferred)
+  }))
+
+const obtainTokens = (session: Session, force: boolean) =>
+  Effect.uninterruptibleMask((restore) => Effect.gen(function*() {
     const current = session.tokens
     if (!force && current && tokenIsFresh(current, Date.now(), SKEW_MS)) {
-      return Effect.succeed(current)
+      return current
     }
-    const effect = current?.refreshToken && (!force || current.refreshToken !== "")
-      ? refreshGrant(session, current.refreshToken)
-      : passwordGrant(session)
-    return effect.pipe(Effect.tap((tokens) => {
-      session.tokens = tokens
-      return session.save(tokens)
-    }))
-  }
-  if (inflight) return inflight
-  const effect = run().pipe(Effect.ensuring(Effect.sync(() => {
-    inflight = undefined
-  })))
-  inflight = effect
-  return effect
-}
+    const slot = yield* Effect.sync(() => {
+      const existing = flights.get(session)
+      if (existing) {
+        existing.waiters++
+        return { flight: existing, owner: false }
+      }
+      const flight: TokenFlight = {
+        deferred: Deferred.makeUnsafe<TokenSet, TokenError>(),
+        waiters: 1
+      }
+      flights.set(session, flight)
+      return { flight, owner: true }
+    })
+    if (slot.owner) {
+      const work = Deferred.complete(slot.flight.deferred, acquireTokens(session, force)).pipe(
+        Effect.ensuring(Effect.sync(() => {
+          if (flights.get(session) === slot.flight) flights.delete(session)
+        }))
+      )
+      slot.flight.fiber = yield* Effect.forkDetach(work)
+    }
+    return yield* restore(Deferred.await(slot.flight.deferred)).pipe(
+      Effect.onInterrupt(() => releaseFlight(session, slot.flight))
+    )
+  }))
 
 const with429 = <E, R>(attempt: Effect.Effect<CallResult, E, R>, seen = 0): Effect.Effect<CallResult, E, R> =>
   Effect.flatMap(attempt, (result) => {
@@ -310,5 +350,7 @@ export const logout = (session: Session) => {
 }
 
 export const resetAuthFlight = () => {
-  inflight = undefined
+  flights.clear()
 }
+
+export const tokenFlightWaiters = (session: Session) => flights.get(session)?.waiters ?? 0
