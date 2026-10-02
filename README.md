@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-npm install -g upim
+npm install -g @kylelittle/upim
 ```
 
 Node.js 24 or newer is required. The binary is `upim`.
@@ -185,7 +185,7 @@ git push origin main --follow-tags
 The package has to exist before npm will store that link. After the first publish, allow this repository's `release.yml` workflow to run `npm publish` directly:
 
 ```bash
-npm trust github upim --file release.yml --repo klittle32/upim --allow-publish
+npm trust github @kylelittle/upim --file release.yml --repo klittle32/upim --allow-publish
 ```
 
 Leave the environment name blank. New trusted publishers otherwise default to staged publishing, which would wait for a manual approval on every release.

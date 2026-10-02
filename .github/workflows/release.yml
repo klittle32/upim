@@ -1,7 +1,7 @@
 # Publishes npm and opens the GitHub release for an annotated vX.Y.Z tag.
 # npm auth is trusted publishing (OIDC). Do not add an NPM_TOKEN.
 # One-time, after the package exists and while logged in:
-#   npm trust github upim --file release.yml --repo klittle32/upim --allow-publish
+#   npm trust github @kylelittle/upim --file release.yml --repo klittle32/upim --allow-publish
 # Allow direct npm publish. Leave the environment blank.
 name: Release
 
@@ -65,9 +65,10 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
         run: |
           set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          if npm view "upim@${version}" version >/dev/null 2>&1; then
-            echo "upim@${version} is already on npm"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "${name}@${version} is already on npm"
           else
             npm publish --access public
           fi
