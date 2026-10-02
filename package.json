@@ -1,6 +1,6 @@
 {
   "name": "@kylelittle/upim",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Command-line client for the UnoPim 3.1 REST API, with OAuth, an agent-readable field contract, and an installable skill.",
   "author": "Kyle Little",
   "publishConfig": {
@@ -16,13 +16,13 @@
   },
   "type": "module",
   "bin": {
-    "upim": "./src/main.ts"
+    "upim": "./dist/main.js"
   },
   "engines": {
     "node": ">=24"
   },
   "files": [
-    "src",
+    "dist",
     "skills",
     "README.md",
     "LICENSE"
@@ -32,7 +32,8 @@
     "check": "tsc --noEmit --pretty false",
     "test": "node --test test/*.test.ts",
     "journal": "node dev/journal.ts",
-    "prepare": "effect-tsgo patch --typescript --no-oxlint"
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "effect-tsgo patch --typescript --no-oxlint && tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "effect": "4.0.0"

@@ -8,7 +8,7 @@
 npm install -g @kylelittle/upim
 ```
 
-Node.js 24 or newer is required. The binary is `upim`.
+Node.js 24 or newer is required. The binary is `upim`. The published package runs compiled JavaScript. A checkout runs the TypeScript entrypoint directly.
 
 From a checkout:
 

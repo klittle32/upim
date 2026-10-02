@@ -67,10 +67,14 @@ jobs:
           set -euo pipefail
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          if npm view "${name}@${version}" version >/dev/null 2>&1; then
-            echo "${name}@${version} is already on npm"
-          else
-            npm publish --access public
+          log="$RUNNER_TEMP/npm-publish.txt"
+          set +e
+          npm publish --access public >"$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          if [ "$code" -ne 0 ] && ! grep -q "previously published versions" "$log"; then
+            exit "$code"
           fi
 
       - name: Publish the GitHub release
