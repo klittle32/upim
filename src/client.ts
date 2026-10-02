@@ -1,4 +1,4 @@
-import { Deferred, Effect, Fiber, Schema } from "effect"
+import { Clock, Deferred, Effect, Fiber, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
@@ -36,8 +36,6 @@ export type CallResult = {
 const SKEW_MS = 60_000
 const MAX_429 = 5
 
-const sleep = (ms: number) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, ms)))
-
 export type HttpClientEnv = HttpClient.HttpClient
 
 type TokenError = AuthError | TransportError | ApiError | UsageError
@@ -52,13 +50,13 @@ const flights = new Map<Session, TokenFlight>()
 
 const headerValue = (headers: { readonly [key: string]: string }, name: string) => headers[name.toLowerCase()]
 
-const retryDelay = (headers: { readonly [key: string]: string }, attempt: number) => {
+const retryDelay = (headers: { readonly [key: string]: string }, attempt: number, now: number) => {
   const header = headerValue(headers, "retry-after")
   if (header !== undefined) {
     const seconds = Number(header)
     if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
     const when = Date.parse(header)
-    if (!Number.isNaN(when)) return Math.max(0, when - Date.now())
+    if (!Number.isNaN(when)) return Math.max(0, when - now)
   }
   return Math.min(30_000, 2 ** attempt * 1000)
 }
@@ -236,7 +234,10 @@ const obtainTokens = (session: Session, force: boolean) =>
 const with429 = <E, R>(attempt: Effect.Effect<CallResult, E, R>, seen = 0): Effect.Effect<CallResult, E, R> =>
   Effect.flatMap(attempt, (result) => {
     if (result.status !== 429 || seen + 1 >= MAX_429) return Effect.succeed(result)
-    return Effect.flatMap(sleep(retryDelay(result.headers, seen)), () => with429(attempt, seen + 1))
+    return Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => Effect.sleep(retryDelay(result.headers, seen, now))),
+      Effect.flatMap(() => with429(attempt, seen + 1))
+    )
   })
 
 const oneCall = (session: Session, input: CallInput, tokens: TokenSet | undefined) => {

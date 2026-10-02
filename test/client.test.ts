@@ -2,8 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { Effect, Fiber, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
+import { TestClock } from "effect/testing"
 import { call, login, resetAuthFlight, tokenFlightWaiters, type Session } from "../src/client.ts"
-import { AuthError, UsageError } from "../src/errors.ts"
+import { ApiError, AuthError, UsageError } from "../src/errors.ts"
 import { basicAuthorization } from "../src/oauth.ts"
 import type { TokenSet } from "../src/tokens.ts"
 
@@ -368,4 +369,120 @@ test("cancelling one overlapping caller leaves the other with the shared token",
   assert.equal(oauthCalls, 1)
   assert.equal(tokens.accessToken, "shared")
   assert.equal(saved?.accessToken, "shared")
+})
+
+const locales = { method: "GET", path: "/api/v1/rest/locales" } as const
+
+const onClock = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(TestClock.layer()))
+
+test("waits for a numeric Retry-After on the test clock", { timeout: 3000 }, async () => {
+  resetAuthFlight()
+  let hits = 0
+  let mark: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    mark = resolve
+  })
+  const fetchImpl: typeof fetch = async () => {
+    hits++
+    if (hits === 1) {
+      mark()
+      return jsonResponse(429, { message: "slow" }, { "retry-after": "2" })
+    }
+    return jsonResponse(200, { ok: true })
+  }
+  const result = await execute(fetchImpl, onClock(Effect.gen(function*() {
+    const fiber = yield* Effect.forkChild(call(freshSession(), locales))
+    yield* Effect.promise(() => started)
+    yield* TestClock.adjust("2 seconds")
+    return yield* Fiber.join(fiber)
+  })))
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.body, { ok: true })
+  assert.equal(hits, 2)
+})
+
+test("uses fallback backoff when Retry-After is absent", { timeout: 3000 }, async () => {
+  resetAuthFlight()
+  let hits = 0
+  let mark: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    mark = resolve
+  })
+  const fetchImpl: typeof fetch = async () => {
+    hits++
+    if (hits === 1) {
+      mark()
+      return jsonResponse(429, { message: "slow" })
+    }
+    return jsonResponse(200, { ok: true })
+  }
+  const result = await execute(fetchImpl, onClock(Effect.gen(function*() {
+    const fiber = yield* Effect.forkChild(call(freshSession(), locales))
+    yield* Effect.promise(() => started)
+    yield* TestClock.adjust("1 seconds")
+    return yield* Fiber.join(fiber)
+  })))
+  assert.equal(result.status, 200)
+  assert.equal(hits, 2)
+})
+
+test("waits until an HTTP-date Retry-After on the test clock", { timeout: 3000 }, async () => {
+  resetAuthFlight()
+  let hits = 0
+  let mark: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    mark = resolve
+  })
+  const fetchImpl: typeof fetch = async () => {
+    hits++
+    if (hits === 1) {
+      mark()
+      return jsonResponse(429, { message: "slow" }, { "retry-after": new Date(5_000).toUTCString() })
+    }
+    return jsonResponse(200, { ok: true })
+  }
+  const result = await execute(fetchImpl, onClock(Effect.gen(function*() {
+    const fiber = yield* Effect.forkChild(call(freshSession(), locales))
+    yield* Effect.promise(() => started)
+    yield* TestClock.adjust("5 seconds")
+    return yield* Fiber.join(fiber)
+  })))
+  assert.equal(result.status, 200)
+  assert.equal(hits, 2)
+})
+
+test("stops after the bounded number of 429 responses", async () => {
+  resetAuthFlight()
+  let hits = 0
+  const fetchImpl: typeof fetch = async () => {
+    hits++
+    return jsonResponse(429, { message: "slow" }, { "retry-after": "0" })
+  }
+  await assert.rejects(
+    () => execute(fetchImpl, call(freshSession(), locales)),
+    (error: unknown) => error instanceof ApiError && error.status === 429
+  )
+  assert.equal(hits, 5)
+})
+
+test("interrupting a backoff delay does not send the retry", { timeout: 3000 }, async () => {
+  resetAuthFlight()
+  let hits = 0
+  let mark: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    mark = resolve
+  })
+  const fetchImpl: typeof fetch = async () => {
+    hits++
+    mark()
+    return jsonResponse(429, { message: "slow" }, { "retry-after": "30" })
+  }
+  await execute(fetchImpl, onClock(Effect.gen(function*() {
+    const fiber = yield* Effect.forkChild(call(freshSession(), locales))
+    yield* Effect.promise(() => started)
+    yield* TestClock.adjust("1 millis")
+    yield* Fiber.interrupt(fiber)
+    yield* TestClock.adjust("30 seconds")
+  })))
+  assert.equal(hits, 1)
 })
