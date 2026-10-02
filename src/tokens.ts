@@ -8,7 +8,7 @@ export const TokenSetSchema = Schema.Struct({
   accessToken: Schema.String,
   refreshToken: Schema.String,
   tokenType: Schema.String,
-  expiresAt: Schema.Number
+  expiresAt: Schema.Finite
 })
 
 export type TokenSet = typeof TokenSetSchema.Type

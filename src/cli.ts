@@ -79,11 +79,11 @@ const readText = (file: string) =>
 const readJsonBody = (data: string | undefined, file: string | undefined, required: boolean) =>
   Effect.gen(function*() {
     if (data !== undefined && file !== undefined) {
-      return yield* Effect.fail(new UsageError({ message: "Pass only one of --data or --file" }))
+      return yield* new UsageError({ message: "Pass only one of --data or --file" })
     }
     if (data === undefined && file === undefined) {
       if (!required) return undefined
-      return yield* Effect.fail(new UsageError({ message: "Pass JSON with --data or --file" }))
+      return yield* new UsageError({ message: "Pass JSON with --data or --file" })
     }
     const text = data ?? (yield* readText(file!))
     return yield* Effect.try({
@@ -306,7 +306,7 @@ const promptOr = (current: string | undefined, label: string, secret = false) =>
     ? Effect.succeed(current.trim())
     : Effect.gen(function*() {
       if (!process.stdin.isTTY) {
-        return yield* Effect.fail(new UsageError({ message: `${label} is required in non-interactive mode` }))
+        return yield* new UsageError({ message: `${label} is required in non-interactive mode` })
       }
       const answer = yield* ask(label, { secret })
       return yield* requireValue(answer, `${label} is required`)
@@ -396,7 +396,7 @@ const configCommand = Command.make("config").pipe(
       }
       const key = flags.key
       if (!["baseUrl", "clientId", "clientSecret", "username", "password"].includes(key)) {
-        return yield* Effect.fail(new UsageError({ message: `Unknown config key ${key}` }))
+        return yield* new UsageError({ message: `Unknown config key ${key}` })
       }
       const value = key === "baseUrl" ? yield* requireBaseUrl(flags.value) : flags.value
       const next: ConfigFile = {
@@ -414,7 +414,7 @@ const configCommand = Command.make("config").pipe(
       const locations = locationsFrom(optionValue(parent.config))
       const config = yield* loadConfig(locations)
       if (config.profiles[flags.name] === undefined) {
-        return yield* Effect.fail(new ConfigError({ message: `Profile "${flags.name}" does not exist` }))
+        return yield* new ConfigError({ message: `Profile "${flags.name}" does not exist` })
       }
       yield* saveConfig(locations, { ...config, current: flags.name })
       emit({ current: flags.name }, parent.json)
@@ -484,7 +484,7 @@ const authCommand = Command.make("auth").pipe(
       const parent = yield* globals()
       const { session, name } = yield* openSession(parent)
       if (!session.tokens?.refreshToken && !(session.profile.username && session.profile.password)) {
-        return yield* Effect.fail(new UsageError({ message: "No refresh token or password is available" }))
+        return yield* new UsageError({ message: "No refresh token or password is available" })
       }
       const tokens = yield* login(session)
       emit({
@@ -536,7 +536,7 @@ const apiCommand = Command.make("api", {
 }, (flags) => Effect.gen(function*() {
   const method = flags.method.toUpperCase()
   if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
-    return yield* Effect.fail(new UsageError({ message: `Unsupported method ${flags.method}` }))
+    return yield* new UsageError({ message: `Unsupported method ${flags.method}` })
   }
   const query: Record<string, string> = {}
   for (const pair of flags.query) {

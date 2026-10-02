@@ -167,12 +167,10 @@ const passwordGrant = (session: Session) => {
 
 const refreshGrant = (session: Session, refreshToken: string) =>
   tokenRequest(session, refreshGrantBody(refreshToken)).pipe(
-    Effect.catch((error: AuthError | ApiError | TransportError | UsageError) => {
-      if (error._tag === "AuthError" && session.profile.password && session.profile.username) {
-        return passwordGrant(session)
-      }
-      return Effect.fail(error)
-    })
+    Effect.catchIf(
+      (error) => error._tag === "AuthError" && Boolean(session.profile.password && session.profile.username),
+      () => passwordGrant(session)
+    )
   )
 
 const acquireTokens = (session: Session, force: boolean) => {
@@ -330,7 +328,7 @@ const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: Ca
 export const call = (session: Session, input: CallInput): Effect.Effect<CallResult, AppError, HttpClientEnv | FileSystem.FileSystem> =>
   Effect.gen(function*() {
     if (input.body !== undefined && input.form !== undefined) {
-      return yield* Effect.fail(new UsageError({ message: "Pass either a JSON body or form fields, not both" }))
+      return yield* new UsageError({ message: "Pass either a JSON body or form fields, not both" })
     }
     const tokens = input.auth === false ? undefined : yield* obtainTokens(session, false)
     let result = yield* oneCall(session, input, tokens)

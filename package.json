@@ -1,6 +1,6 @@
 {
   "name": "@kylelittle/upim",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Command-line client for the UnoPim 3.1 REST API, with OAuth, an agent-readable field contract, and an installable skill.",
   "author": "Kyle Little",
   "publishConfig": {

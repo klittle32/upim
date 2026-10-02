@@ -16,7 +16,7 @@ export const refreshGrantBody = (refreshToken: string) => ({
 
 export const TokenResponseSchema = Schema.Struct({
   token_type: Schema.optional(Schema.String),
-  expires_in: Schema.optional(Schema.Number),
+  expires_in: Schema.optional(Schema.Finite),
   access_token: Schema.String,
   refresh_token: Schema.optional(Schema.String)
 })
