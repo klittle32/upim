@@ -240,6 +240,12 @@ const interpret = (input: CallInput, result: CallResult) => {
   return Effect.fail(asApiError(input, result))
 }
 
+const linkNext = (body: unknown): string | undefined => {
+  if (typeof body !== "object" || body === null || !("links" in body)) return undefined
+  const next = (body as { links?: { next?: unknown } }).links?.next
+  return typeof next === "string" && next !== "" ? next : undefined
+}
+
 const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: CallResult) =>
   Effect.gen(function*() {
     const maxPages = input.maxPages ?? 1000
@@ -255,10 +261,18 @@ const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: Ca
         : undefined
       if (!Array.isArray(data)) return first
       items.push(...data)
-      const next = typeof page.body === "object" && page.body !== null && "links" in page.body
-        ? (page.body as { links?: { next?: unknown } }).links?.next
-        : undefined
-      if (typeof next !== "string" || next === "" || seen.has(next) || count >= maxPages) break
+      const next = linkNext(page.body)
+      if (next === undefined) break
+      if (seen.has(next)) {
+        return yield* new UsageError({
+          message: `Pagination stopped because links.next repeated after ${count} page(s): ${next}. The catalog is incomplete.`
+        })
+      }
+      if (count >= maxPages) {
+        return yield* new UsageError({
+          message: `Pagination stopped at the safety cap of ${maxPages} page(s) while links.next was still ${next}. The catalog is incomplete. Raise --max-pages, or resume with the page or search_after from that URL.`
+        })
+      }
       seen.add(next)
       page = yield* oneCall(session, { ...input, path: next, query: {}, body: undefined, form: undefined }, tokens)
       if (page.status === 401 || page.status === 429 || page.status < 200 || page.status >= 300) {

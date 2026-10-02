@@ -150,8 +150,8 @@ const cliFor = (action: Action): readonly CliFlagDocument[] => [
   ...(action.list ? [
     { name: "--filter", description: "Repeatable key:operator:value filter. Merged into the filters query parameter." },
     { name: "--filters", description: "Raw filters JSON object." },
-    { name: "--all", description: "Follow links.next and concatenate data. This is a client flag, not a query parameter." },
-    { name: "--max-pages", description: "Safety cap for --all. The default is 1000." }
+    { name: "--all", description: "Follow links.next and concatenate data. Fails instead of returning a partial catalog. This is a client flag, not a query parameter." },
+    { name: "--max-pages", description: "Safety cap for --all. The default is 1000. A remaining links.next fails the command." }
   ] : []),
   { name: "--if-none-match", description: "Send If-None-Match. A 304 becomes { notModified: true }." },
   ...(!action.list ? [{ name: "--query", description: "Extra query parameter as key=value. Repeatable." }] : [])

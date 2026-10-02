@@ -30,7 +30,7 @@ If a command says the profile is not configured, run `upim config init` or `upim
 - Query flags use the spelling in `example.command`. List calls use `--limit`, `--pagination-type search_after`, `--search-after`, and `--filter key:operator:value`.
 - Send a JSON body with `--data` or `--file`. `--file -` reads stdin.
 - A `path` such as `/sku` is the field to fix. Unknown keys are allowed. A `422` from UnoPim is the authority for attribute rules.
-- For a large catalog, use `--pagination-type search_after` and `--all`.
+- For a large catalog, use `--pagination-type search_after` and `--all`. `--all` fails, rather than returning a partial catalog, if it hits `--max-pages` (default 1000) or a repeated `links.next`. Raise `--max-pages`, or resume from the `page` or `search_after` in the reported URL. A finished walk has `links.next` null.
 
 ## Product values
 

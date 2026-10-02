@@ -151,7 +151,7 @@ upim passports publish shirt-1 --data '{"channel_id":1,"locale_ids":[1]}'
 upim api GET /api/v1/rest/products --query limit=10
 ```
 
-Filters accept either a raw JSON `--filters` object, as documented by UnoPim, or repeatable `--filter key:operator:value` clauses such as `sku:IN:a,b` and `status:=:true`. `--all` follows `links.next` until it is null. `304 Not Modified` is returned as `{ "notModified": true }` when you pass `--if-none-match`. `--meta` adds the status line and response headers.
+Filters accept either a raw JSON `--filters` object, as documented by UnoPim, or repeatable `--filter key:operator:value` clauses such as `sku:IN:a,b` and `status:=:true`. `--all` follows `links.next` until it is null. It exits non-zero, and does not print a partial catalog, if it reaches `--max-pages` (default 1000) or sees a repeated `links.next`. Resume from the `page` or `search_after` in the URL from that error, or raise `--max-pages`. `304 Not Modified` is returned as `{ "notModified": true }` when you pass `--if-none-match`. `--meta` adds the status line and response headers.
 
 Covered resources: attributes and options, attribute groups, families and variant structures, categories, category fields and options, products, configurable products, channels, locales, currencies, association types and fields, product/category/swatch media, digital product passports, and measurement families, units, and attribute bindings. `upim api` sends any other path with the same authentication.
 

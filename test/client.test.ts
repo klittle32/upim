@@ -3,6 +3,7 @@ import test from "node:test"
 import { Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { call, resetAuthFlight, type Session } from "../src/client.ts"
+import { UsageError } from "../src/errors.ts"
 import type { TokenSet } from "../src/tokens.ts"
 
 const execute = <A>(fetchImpl: typeof fetch, effect: Effect.Effect<A, unknown, any>) =>
@@ -95,5 +96,98 @@ test("backs off on 429 and then returns the success body", async () => {
   }
   const result = await execute(fetchImpl, call(session, { method: "GET", path: "/api/v1/rest/locales" }))
   assert.equal(result.status, 200)
+  assert.equal(hits, 2)
+})
+
+const freshSession = (): Session => ({
+  profile,
+  profileName: "default",
+  tokens: {
+    accessToken: "fresh",
+    refreshToken: "refresh-1",
+    tokenType: "Bearer",
+    expiresAt: Date.now() + 3_600_000
+  },
+  save: () => Effect.void
+})
+
+const collection = (data: readonly unknown[], next: string | null) =>
+  jsonResponse(200, { data, links: { next } })
+
+test("aggregates every page when links.next is exhausted", async () => {
+  resetAuthFlight()
+  const second = "https://pim.example.com/api/v1/rest/products?page=2"
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input)
+    if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
+    if (url === second) return collection([{ sku: "b" }], null)
+    throw new Error(url)
+  }
+  const result = await execute(fetchImpl, call(freshSession(), {
+    method: "GET",
+    path: "/api/v1/rest/products",
+    followPages: true,
+    maxPages: 2
+  }))
+  assert.deepEqual(result.body, {
+    data: [{ sku: "a" }, { sku: "b" }],
+    pages: 2,
+    links: { next: null }
+  })
+})
+
+test("fails when maxPages leaves another page", async () => {
+  resetAuthFlight()
+  const second = "https://pim.example.com/api/v1/rest/products?page=2"
+  let hits = 0
+  const fetchImpl: typeof fetch = async (input) => {
+    hits++
+    const url = String(input)
+    if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
+    throw new Error(url)
+  }
+  await assert.rejects(
+    () => execute(fetchImpl, call(freshSession(), {
+      method: "GET",
+      path: "/api/v1/rest/products",
+      followPages: true,
+      maxPages: 1
+    })),
+    (error: unknown) => {
+      assert.ok(error instanceof UsageError)
+      assert.match(error.message, /safety cap of 1 page/)
+      assert.match(error.message, /incomplete/)
+      assert.match(error.message, new RegExp(second.replace(/[?]/g, "\\?")))
+      return true
+    }
+  )
+  assert.equal(hits, 1)
+})
+
+test("fails when links.next repeats instead of reporting completion", async () => {
+  resetAuthFlight()
+  const second = "https://pim.example.com/api/v1/rest/products?page=2"
+  let hits = 0
+  const fetchImpl: typeof fetch = async (input) => {
+    hits++
+    const url = String(input)
+    if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
+    if (url === second) return collection([{ sku: "b" }], second)
+    throw new Error(url)
+  }
+  await assert.rejects(
+    () => execute(fetchImpl, call(freshSession(), {
+      method: "GET",
+      path: "/api/v1/rest/products",
+      followPages: true
+    })),
+    (error: unknown) => {
+      assert.ok(error instanceof UsageError)
+      assert.match(error.message, /links\.next repeated after 2 page/)
+      assert.match(error.message, /incomplete/)
+      assert.match(error.message, new RegExp(second.replace(/[?]/g, "\\?")))
+      return true
+    }
+  )
   assert.equal(hits, 2)
 })

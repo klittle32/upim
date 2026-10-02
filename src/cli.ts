@@ -177,8 +177,11 @@ const actionConfig = (action: Action) => {
     config.searchAfter = Flag.Int("search-after").pipe(Flag.optional, Flag.withDescription("Cursor from the previous page"))
     config.filters = optionalString("filters", "Filter JSON object, for example {\"sku\":[{\"operator\":\"IN\",\"value\":[\"a\"]}]}")
     config.filter = repeated("filter", "Repeatable key:operator:value filter, for example sku:IN:a,b")
-    config.all = bool("all", "Follow links.next and concatenate data")
-    config.maxPages = Flag.Int("max-pages").pipe(Flag.optional, Flag.withDescription("Safety cap for --all (default 1000)"))
+    config.all = bool("all", "Follow links.next and concatenate data. Fails instead of returning a partial catalog")
+    config.maxPages = Flag.Int("max-pages").pipe(
+      Flag.optional,
+      Flag.withDescription("Safety cap for --all (default 1000). A remaining links.next fails the command")
+    )
   }
   if (action.body) {
     config.data = optionalString("data", "JSON request body")
@@ -526,7 +529,11 @@ const apiCommand = Command.make("api", {
   formFile: repeated("form-file", "Form file key=path. Repeatable"),
   query: repeated("query", "Query parameter key=value. Repeatable"),
   header: repeated("header", "Header key=value. Repeatable"),
-  all: bool("all", "Follow links.next when the response is a collection")
+  all: bool("all", "Follow links.next when the response is a collection. Fails instead of returning a partial catalog"),
+  maxPages: Flag.Int("max-pages").pipe(
+    Flag.optional,
+    Flag.withDescription("Safety cap for --all (default 1000). A remaining links.next fails the command")
+  )
 }, (flags) => Effect.gen(function*() {
   const method = flags.method.toUpperCase()
   if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
@@ -563,7 +570,8 @@ const apiCommand = Command.make("api", {
     headers,
     body,
     form: flags.form.length + flags.formFile.length > 0 ? form : undefined,
-    followPages: flags.all
+    followPages: flags.all,
+    maxPages: Option.isSome(flags.maxPages) ? flags.maxPages.value : undefined
   })
 })).pipe(Command.withDescription("Call any UnoPim path. Authentication and refresh still apply"))
 
