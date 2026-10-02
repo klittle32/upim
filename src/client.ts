@@ -1,4 +1,4 @@
-import { Clock, Deferred, Effect, Fiber, Schema } from "effect"
+import { Clock, Deferred, Effect, Fiber, FileSystem, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
@@ -10,7 +10,7 @@ export type Session = {
   profile: Profile
   readonly profileName: string
   tokens: TokenSet | undefined
-  readonly save: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError>
+  readonly save: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, FileSystem.FileSystem>
 }
 
 export type CallInput = {
@@ -327,7 +327,7 @@ const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: Ca
     } satisfies CallResult
   })
 
-export const call = (session: Session, input: CallInput): Effect.Effect<CallResult, AppError, HttpClientEnv> =>
+export const call = (session: Session, input: CallInput): Effect.Effect<CallResult, AppError, HttpClientEnv | FileSystem.FileSystem> =>
   Effect.gen(function*() {
     if (input.body !== undefined && input.form !== undefined) {
       return yield* Effect.fail(new UsageError({ message: "Pass either a JSON body or form fields, not both" }))
@@ -343,7 +343,7 @@ export const call = (session: Session, input: CallInput): Effect.Effect<CallResu
     return yield* pageAll(session, input, session.tokens ?? tokens!, interpreted)
   })
 
-export const login = (session: Session): Effect.Effect<TokenSet, AppError, HttpClientEnv> => obtainTokens(session, true)
+export const login = (session: Session): Effect.Effect<TokenSet, AppError, HttpClientEnv | FileSystem.FileSystem> => obtainTokens(session, true)
 
 export const logout = (session: Session) => {
   session.tokens = undefined

@@ -1,7 +1,7 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { Data, Effect, Schema } from "effect"
+import { Effect, FileSystem, Schema } from "effect"
 import { ConfigError } from "./errors.ts"
+import { isNotFound } from "./filesystem.ts"
 import { resolveLocations, type Locations } from "./paths.ts"
 
 export const ProfileSchema = Schema.Struct({
@@ -23,50 +23,41 @@ export type ConfigFile = typeof ConfigSchema.Type
 
 export const emptyConfig = (): ConfigFile => ({ current: "default", profiles: {} })
 
-class FileReadError extends Data.TaggedError("FileReadError")<{
-  readonly path: string
-  readonly code?: string
-  readonly message: string
-}> {}
-
-const readJson = (path: string) =>
-  Effect.tryPromise({
-    try: () => readFile(path, "utf8"),
-    catch: (error) => new FileReadError({
-      path,
-      code: typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined,
-      message: `Could not read ${path}: ${String(error)}`
-    })
+const readText = (path: string) =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    return yield* fs.readFileString(path)
   })
 
 export const loadConfig = (locations: Locations) =>
   Effect.gen(function*() {
-    const text = yield* readJson(locations.configPath).pipe(
-      Effect.catch((error) => error.code === "ENOENT"
+    const text = yield* readText(locations.configPath).pipe(
+      Effect.catch((error) => isNotFound(error)
         ? Effect.succeed(undefined)
-        : Effect.fail(new ConfigError({ message: error.message })))
+        : Effect.fail(new ConfigError({ message: `Could not read ${locations.configPath}: ${error.message}` })))
     )
     if (text === undefined) return emptyConfig()
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch (error) {
-      return yield* new ConfigError({ message: `Invalid JSON in ${locations.configPath}: ${String(error)}` })
-    }
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: (error) => new ConfigError({ message: `Invalid JSON in ${locations.configPath}: ${String(error)}` })
+    })
     return yield* Schema.decodeUnknownEffect(ConfigSchema)(parsed).pipe(
       Effect.mapError((error) => new ConfigError({ message: `Invalid config ${locations.configPath}: ${String(error)}` }))
     )
   })
 
-export const saveConfig = (locations: Locations, config: ConfigFile) =>
-  Effect.tryPromise({
-    try: async () => {
-      await mkdir(dirname(locations.configPath), { recursive: true, mode: 0o700 })
-      await writeFile(locations.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-      await chmod(locations.configPath, 0o600)
-    },
-    catch: (error) => new ConfigError({ message: `Could not write ${locations.configPath}: ${String(error)}` })
+const writePrivate = (path: string, contents: string) =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 })
+    yield* fs.writeFileString(path, contents, { mode: 0o600 })
+    yield* fs.chmod(path, 0o600)
   })
+
+export const saveConfig = (locations: Locations, config: ConfigFile) =>
+  writePrivate(locations.configPath, `${JSON.stringify(config, null, 2)}\n`).pipe(
+    Effect.mapError((error) => new ConfigError({ message: `Could not write ${locations.configPath}: ${error.message}` }))
+  )
 
 export const normalizeBaseUrl = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/, "")
