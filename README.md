@@ -113,6 +113,8 @@ API commands log in on their own when a saved token is missing and credentials a
 
 Start with `upim endpoints --json`. Each action includes the `describe` command that prints its fields. Failures are one JSON object on stderr, with `error`, `message`, and `path`.
 
+`upim --wizard` walks through a command in the terminal. It needs a TTY.
+
 The base URL is the site root, for example `https://pim.example.com`, not a path ending in `/api/v1/rest`.
 
 ## Fields and validation
