@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { AppError } from "./errors.ts"
-import type { HttpClientEnv } from "./client.ts"
+import type { HttpClientEnv, StorageEnv } from "./client.ts"
 import { flatten, resources, type Action, type FlatAction, type Resource } from "./catalog.ts"
 import { describe, openApiDocument, renderText, type OperationDocument } from "./contract/document.ts"
 import { applyLiveDictionary, attributesFromBody, familyAttributeCodes } from "./contract/live.ts"
@@ -28,7 +28,7 @@ import { emit } from "./output.ts"
 import { ask, confirm } from "./prompt.ts"
 import { fillPath, mergeFilters, parsePair } from "./query.ts"
 import { installSkill, skillSource } from "./skill.ts"
-import { readProfileTokens, tokenIsFresh, writeProfileTokens } from "./tokens.ts"
+import { makeTokenStore, tokenIsFresh } from "./tokens.ts"
 
 const version = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")
@@ -118,12 +118,12 @@ const openSession = (flags: Globals) =>
     const profile: Profile = override === undefined
       ? loaded
       : { ...loaded, baseUrl: yield* requireBaseUrl(override) }
-    const tokens = yield* readProfileTokens(locations, name)
+    const store = makeTokenStore(locations, name)
     const session: Session = {
       profile,
       profileName: name,
-      tokens,
-      save: (next) => writeProfileTokens(locations, name, next)
+      tokens: yield* store.read,
+      store
     }
     return { locations, config, name, session }
   })
@@ -275,7 +275,7 @@ const runAction = (action: Action, flags: Record<string, any>) =>
     })
   })
 
-type CliCommand = Command.Command<string, {}, {}, AppError, HttpClientEnv>
+type CliCommand = Command.Command<string, {}, {}, AppError, HttpClientEnv | StorageEnv>
 
 const fieldReference = (command: readonly string[]) => `Field reference: upim describe ${command.join(" ")}`
 

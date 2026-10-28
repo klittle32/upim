@@ -1,3 +1,4 @@
+import { Effect } from "effect"
 import { isAppError } from "./errors.ts"
 
 export const emit = (value: unknown, json: boolean) => {
@@ -23,3 +24,9 @@ export const printFailure = (error: unknown) => {
   const compact = !process.stderr.isTTY
   process.stderr.write(`${JSON.stringify(payload, null, compact ? undefined : 2)}\n`)
 }
+
+/** One JSON line on stderr for a condition that did not stop the command. */
+export const warn = (message: string) =>
+  Effect.sync(() => {
+    process.stderr.write(`${JSON.stringify({ warning: message })}\n`)
+  })

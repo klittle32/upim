@@ -6,12 +6,21 @@ import { TestClock } from "effect/testing"
 import { call, login, resetAuthFlight, tokenFlightWaiters, type Session } from "../src/client.ts"
 import { ApiError, AuthError, UsageError } from "../src/errors.ts"
 import { basicAuthorization } from "../src/oauth.ts"
-import type { TokenSet } from "../src/tokens.ts"
+import type { TokenSet, TokenStore } from "../src/tokens.ts"
 
 const execute = <A>(fetchImpl: typeof fetch, effect: Effect.Effect<A, unknown, any>) =>
   Effect.runPromise(effect.pipe(Effect.provide(FetchHttpClient.layer.pipe(
     Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetchImpl))
   ))) as Effect.Effect<A>)
+
+const memoryStore = (get: () => TokenSet | undefined, set: (tokens: TokenSet | undefined) => void): TokenStore => ({
+  read: Effect.sync(get),
+  write: (tokens) => Effect.sync(() => set(tokens)),
+  exclusive: (work) => Effect.suspend(() => work({
+    stored: get(),
+    commit: (tokens) => Effect.sync(() => set(tokens))
+  }))
+})
 
 const profile = {
   baseUrl: "https://pim.example.com",
@@ -64,7 +73,7 @@ test("refreshes once after 401 and retries the original request", async () => {
     profile,
     profileName: "default",
     tokens: saved,
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -72,6 +81,30 @@ test("refreshes once after 401 and retries the original request", async () => {
   assert.deepEqual(result.body, { data: [{ sku: "shirt" }] })
   assert.equal(saved?.accessToken, "fresh")
   assert.equal(seen.filter((line) => line.includes("/oauth/token")).length, 1)
+})
+
+test("uses the tokens another process stored instead of refreshing again", async () => {
+  resetAuthFlight()
+  const winner: TokenSet = {
+    accessToken: "from-the-winner",
+    refreshToken: "refresh-9",
+    tokenType: "Bearer",
+    expiresAt: Date.now() + 3_600_000
+  }
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if (String(input).endsWith("/oauth/token")) throw new Error("the loser must not refresh")
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer from-the-winner")
+    return jsonResponse(200, { data: [] })
+  }
+  const session: Session = {
+    profile,
+    profileName: "default",
+    tokens: { ...winner, accessToken: "expired", expiresAt: Date.now() - 1 },
+    store: memoryStore(() => winner, () => assert.fail("nothing should be written"))
+  }
+  const result = await execute(fetchImpl, call(session, { method: "GET", path: "/api/v1/rest/products" }))
+  assert.equal(result.status, 200)
+  assert.deepEqual(session.tokens, winner)
 })
 
 test("backs off on 429 and then returns the success body", async () => {
@@ -94,7 +127,7 @@ test("backs off on 429 and then returns the success body", async () => {
       tokenType: "Bearer",
       expiresAt: Date.now() + 3_600_000
     },
-    save: () => Effect.void
+    store: memoryStore(() => undefined, () => {})
   }
   const result = await execute(fetchImpl, call(session, { method: "GET", path: "/api/v1/rest/locales" }))
   assert.equal(result.status, 200)
@@ -110,7 +143,7 @@ const freshSession = (): Session => ({
     tokenType: "Bearer",
     expiresAt: Date.now() + 3_600_000
   },
-  save: () => Effect.void
+  store: memoryStore(() => undefined, () => {})
 })
 
 const collection = (data: readonly unknown[], next: string | null) =>
@@ -229,7 +262,7 @@ test("shares one token request across overlapping calls for the same session", a
     profile,
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -282,7 +315,7 @@ test("does not share token acquisition across sessions", async () => {
     profile: { ...profile, clientId, clientSecret, password: undefined, username: undefined },
     profileName: name,
     tokens: staleTokens(`refresh-${name}`),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved.get(name), (tokens) => {
       saved.set(name, tokens)
     })
   })
@@ -317,7 +350,7 @@ test("a failed token acquisition can be retried", async () => {
     profile: { ...profile, password: undefined, username: undefined },
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -347,7 +380,7 @@ test("cancelling one overlapping caller leaves the other with the shared token",
     profile: { ...profile, password: undefined, username: undefined },
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }

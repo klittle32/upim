@@ -1,17 +1,19 @@
-import { Clock, Deferred, Effect, Fiber, FileSystem, Schema } from "effect"
+import { Clock, Deferred, Effect, Fiber, type FileSystem, type Path, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
 import { resolveUrl } from "./query.ts"
 import type { Profile } from "./config.ts"
-import { tokenIsFresh, type TokenSet } from "./tokens.ts"
+import { tokenIsFresh, type TokenSet, type TokenStore } from "./tokens.ts"
 
 export type Session = {
   profile: Profile
   readonly profileName: string
   tokens: TokenSet | undefined
-  readonly save: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, FileSystem.FileSystem>
+  readonly store: TokenStore
 }
+
+export type StorageEnv = FileSystem.FileSystem | Path.Path
 
 export type CallInput = {
   readonly method: string
@@ -173,16 +175,26 @@ const refreshGrant = (session: Session, refreshToken: string) =>
     )
   )
 
-const acquireTokens = (session: Session, force: boolean) => {
-  const current = session.tokens
-  const effect = current?.refreshToken && (!force || current.refreshToken !== "")
-    ? refreshGrant(session, current.refreshToken)
-    : passwordGrant(session)
-  return effect.pipe(Effect.tap((tokens) => {
+// Runs under the cross-process token lock. Several upim processes near expiry
+// otherwise refresh at once, which both multiplies grants and tears the file.
+const acquireTokens = (session: Session, force: boolean) =>
+  session.store.exclusive(({ stored, commit }) => Effect.gen(function*() {
+    const attempted = session.tokens
+    const refreshedElsewhere = stored !== undefined
+      && tokenIsFresh(stored, Date.now(), SKEW_MS)
+      && (!force || stored.accessToken !== attempted?.accessToken)
+    if (refreshedElsewhere) {
+      session.tokens = stored
+      return stored
+    }
+    const current = stored ?? attempted
+    const tokens = yield* current?.refreshToken
+      ? refreshGrant(session, current.refreshToken)
+      : passwordGrant(session)
     session.tokens = tokens
-    return session.save(tokens)
+    yield* commit(tokens)
+    return tokens
   }))
-}
 
 const releaseFlight = (session: Session, flight: TokenFlight) =>
   Effect.uninterruptible(Effect.gen(function*() {
@@ -325,7 +337,7 @@ const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: Ca
     } satisfies CallResult
   })
 
-export const call = (session: Session, input: CallInput): Effect.Effect<CallResult, AppError, HttpClientEnv | FileSystem.FileSystem> =>
+export const call = (session: Session, input: CallInput): Effect.Effect<CallResult, AppError, HttpClientEnv | StorageEnv> =>
   Effect.gen(function*() {
     if (input.body !== undefined && input.form !== undefined) {
       return yield* new UsageError({ message: "Pass either a JSON body or form fields, not both" })
@@ -341,11 +353,11 @@ export const call = (session: Session, input: CallInput): Effect.Effect<CallResu
     return yield* pageAll(session, input, session.tokens ?? tokens!, interpreted)
   })
 
-export const login = (session: Session): Effect.Effect<TokenSet, AppError, HttpClientEnv | FileSystem.FileSystem> => obtainTokens(session, true)
+export const login = (session: Session): Effect.Effect<TokenSet, AppError, HttpClientEnv | StorageEnv> => obtainTokens(session, true)
 
 export const logout = (session: Session) => {
   session.tokens = undefined
-  return session.save(undefined)
+  return session.store.write(undefined)
 }
 
 export const resetAuthFlight = () => {
