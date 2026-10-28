@@ -65,15 +65,16 @@ export const builtinExtensions: readonly Extension[] = [dam]
 const decodeExtensionText = Schema.decodeUnknownEffect(Schema.fromJsonString(ExtensionSchema))
 
 /** Where custom fragments are read from: the project (its root and the current directory) and the user config dir. */
-export const extensionDirectories = (cwd: string, locations: Locations, path: Path.Path): readonly string[] => {
-  const root = projectRoot(cwd)
+export const extensionDirectories = Effect.fnUntraced(function*(cwd: string, locations: Locations) {
+  const path = yield* Path.Path
+  const root = yield* projectRoot(cwd)
   const candidates = [
     path.join(root, ".upim", "extensions"),
     path.join(path.resolve(cwd), ".upim", "extensions"),
     path.join(path.dirname(locations.configPath), "extensions")
   ]
-  return [...new Set(candidates)]
-}
+  return [...new Set(candidates)] as readonly string[]
+})
 
 const readFragments = Effect.fnUntraced(function*(directory: string) {
   const fs = yield* FileSystem.FileSystem
@@ -102,9 +103,8 @@ const readFragments = Effect.fnUntraced(function*(directory: string) {
  * built-in name.
  */
 export const loadExtensions = Effect.fn("extensions.loadExtensions")(function*(cwd: string, locations: Locations) {
-  const path = yield* Path.Path
   const installed: InstalledExtension[] = builtinExtensions.map((extension) => ({ extension, source: "builtin" }))
-  for (const directory of extensionDirectories(cwd, locations, path)) {
+  for (const directory of yield* extensionDirectories(cwd, locations)) {
     for (const found of yield* readFragments(directory)) {
       const clash = installed.find((entry) => entry.extension.name === found.extension.name)
       if (clash) {

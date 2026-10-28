@@ -1,92 +1,41 @@
-import { emitKeypressEvents, type Key } from "node:readline"
-import { NodeCrypto, NodePath } from "@effect/platform-node"
-import { type Cause, Effect, Layer, Logger, Option, Queue, Sink, Stdio, Stream, Terminal } from "effect"
+import { NodeChildProcessSpawner, NodeCrypto, NodeFileSystem, NodePath, NodeStdio, NodeTerminal } from "@effect/platform-node"
+import { Effect, Layer, Logger, Stdio, Terminal } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { ChildProcessSpawner } from "effect/process"
 import { UsageError } from "./errors.ts"
-import { layer as nodeFileSystem } from "./filesystem.ts"
 import { TokenLocks } from "./locks.ts"
 import { stderrLogger } from "./output.ts"
 
-const stdio = Stdio.make({
-  args: Effect.succeed(process.argv.slice(2)),
-  stdin: Stream.empty,
-  stdinIsTerminal: Effect.succeed(Boolean(process.stdin.isTTY)),
-  stdoutIsTerminal: Effect.succeed(Boolean(process.stdout.isTTY)),
-  stdout: () => Sink.forEach((chunk: string | Uint8Array) => Effect.sync(() => {
-    process.stdout.write(chunk)
-  })),
-  stderr: () => Sink.forEach((chunk: string | Uint8Array) => Effect.sync(() => {
-    process.stderr.write(chunk)
-  }))
-})
+const files = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)
 
-// Effect's --wizard reads Terminal.readInput. The queue has to be fed from stdin,
-// and stdin has to stay referenced, or Node drains the event loop and exits
-// while the top-level await in main.ts is still pending.
-const terminal = Terminal.make({
-  columns: Effect.sync(() => process.stdout.columns || 80),
-  rows: Effect.sync(() => process.stdout.rows || 24),
-  display: (text) => Effect.sync(() => {
-    process.stderr.write(text)
-  }),
-  readLine: Effect.die("Use upim prompts instead of Terminal.readLine"),
-  readInput: Effect.gen(function*() {
-    const queue = yield* Queue.unbounded<Terminal.UserInput, Cause.Done>()
-    const input = process.stdin
-    if (!input.isTTY || input.setRawMode === undefined) {
-      return yield* Effect.die(new UsageError({ message: "--wizard needs an interactive terminal" }))
-    }
-
-    const onKeypress = (sequence: string | undefined, key?: Key) => {
-      if (key?.ctrl && key.name === "c") {
-        Queue.endUnsafe(queue)
-        return
-      }
-      Queue.offerUnsafe(queue, {
-        input: sequence === undefined ? Option.none() : Option.some(sequence),
-        key: {
-          name: key?.name ?? "",
-          ctrl: key?.ctrl === true,
-          meta: key?.meta === true,
-          shift: key?.shift === true
+// The platform terminal, except that the wizard refuses to start without a TTY
+// instead of reading an empty stdin and exiting as if the user had quit.
+const terminal = Layer.effect(
+  Terminal.Terminal,
+  Effect.gen(function*() {
+    const node = yield* NodeTerminal.make()
+    const stdio = yield* Stdio.Stdio
+    return Terminal.make({
+      columns: node.columns,
+      rows: node.rows,
+      display: node.display,
+      readLine: node.readLine,
+      readInput: Effect.gen(function*() {
+        if (!(yield* stdio.stdinIsTerminal)) {
+          return yield* Effect.die(new UsageError({ message: "--wizard needs an interactive terminal" }))
         }
+        return yield* node.readInput
       })
-    }
-    const onEnd = () => {
-      Queue.endUnsafe(queue)
-    }
-
-    yield* Effect.addFinalizer(() => Effect.sync(() => {
-      input.off("keypress", onKeypress)
-      input.off("end", onEnd)
-      input.setRawMode?.(false)
-      input.pause()
-      input.unref()
-      Queue.endUnsafe(queue)
-    }))
-
-    emitKeypressEvents(input)
-    input.setRawMode(true)
-    input.on("keypress", onKeypress)
-    input.on("end", onEnd)
-    input.ref()
-    input.resume()
-    return queue
+    })
   })
-})
+).pipe(Layer.provide(NodeStdio.layer))
 
 export const layer = Layer.mergeAll(
   FetchHttpClient.layer,
-  NodePath.layer,
+  files,
   NodeCrypto.layer,
-  nodeFileSystem,
+  NodeStdio.layer,
+  terminal,
+  NodeChildProcessSpawner.layer.pipe(Layer.provide(files)),
   TokenLocks.layer,
-  Logger.layer([stderrLogger]),
-  Layer.succeed(Stdio.Stdio, stdio),
-  Layer.succeed(Terminal.Terminal, terminal),
-  Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make(() => Effect.die("upim does not spawn child processes"))
-  )
+  Logger.layer([stderrLogger])
 )

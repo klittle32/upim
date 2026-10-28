@@ -1,65 +1,84 @@
-import { cp, mkdir } from "node:fs/promises"
-import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
-import { Effect } from "effect"
+import { Effect, FileSystem, Path } from "effect"
 import { UsageError } from "./errors.ts"
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+type Services = FileSystem.FileSystem | Path.Path
 
-export const skillSource = () => join(packageRoot, "skills", "upim")
+/** The directory this package was installed into: the parent of dist/ or src/. */
+const packageRoot = Effect.gen(function*() {
+  const path = yield* Path.Path
+  return yield* path.fromFileUrl(new URL("..", import.meta.url)).pipe(Effect.orDie)
+})
 
-export const projectRoot = (start: string) => {
-  let current = resolve(start)
+export const skillSource = Effect.gen(function*() {
+  const path = yield* Path.Path
+  return path.join(yield* packageRoot, "skills", "upim")
+})
+
+const exists = (fs: FileSystem.FileSystem, target: string) => fs.exists(target).pipe(Effect.orElseSucceed(() => false))
+
+/** The nearest git root above `start`, else the nearest package.json directory, else `start` itself. */
+export const projectRoot = Effect.fn("skill.projectRoot")(function*(start: string) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  let current = path.resolve(start)
   let packageDir: string | undefined
   while (true) {
-    if (existsSync(join(current, ".git"))) return current
-    if (packageDir === undefined && existsSync(join(current, "package.json"))) packageDir = current
-    const parent = dirname(current)
-    if (parent === current) return packageDir ?? resolve(start)
+    if (yield* exists(fs, path.join(current, ".git"))) return current
+    if (packageDir === undefined && (yield* exists(fs, path.join(current, "package.json")))) packageDir = current
+    const parent = path.dirname(current)
+    if (parent === current) return packageDir ?? path.resolve(start)
     current = parent
   }
-}
+})
 
-const expandHome = (value: string) => {
+const expandHome = (value: string, path: Path.Path) => {
   if (value === "~") return homedir()
-  if (value.startsWith("~/")) return join(homedir(), value.slice(2))
+  if (value.startsWith("~/")) return path.join(homedir(), value.slice(2))
   return value
 }
 
-export const skillDestination = (options: { readonly user?: boolean; readonly path?: string; readonly dir?: string; readonly cwd?: string }) => {
-  if (options.path !== undefined && options.user) {
-    throw new UsageError({ message: "Pass either --path or --user, not both." })
-  }
-  if (options.path !== undefined && options.path.trim() !== "") {
-    const base = resolve(options.dir ?? options.cwd ?? process.cwd())
-    const expanded = expandHome(options.path.trim())
-    return isAbsolute(expanded) ? expanded : resolve(base, expanded)
-  }
-  return options.user
-    ? join(homedir(), ".agents", "skills", "upim")
-    : join(projectRoot(options.dir ?? options.cwd ?? process.cwd()), ".agents", "skills", "upim")
+export type InstallOptions = {
+  readonly user?: boolean
+  readonly path?: string
+  readonly dir?: string
+  readonly cwd?: string
 }
 
-export const installSkill = (options: { readonly user?: boolean; readonly path?: string; readonly dir?: string; readonly cwd?: string }) =>
-  Effect.tryPromise({
-    try: async () => {
-      const source = skillSource()
-      if (!existsSync(join(source, "SKILL.md"))) {
-        throw new UsageError({ message: `Bundled skill is missing at ${source}` })
-      }
-      const destination = skillDestination(options)
-      if (resolve(source) === resolve(destination)) {
-        throw new UsageError({ message: "The skill is already loaded from this checkout. Pass --path or --dir to install it somewhere else." })
-      }
-      await mkdir(dirname(destination), { recursive: true })
-      await cp(source, destination, { recursive: true, force: true })
-      const installed = readFileSync(join(destination, "SKILL.md"), "utf8")
-      if (!installed.startsWith("---\nname: upim\n")) {
-        throw new UsageError({ message: `Installed skill at ${destination} is not the upim skill` })
-      }
-      return { installed: destination, source, agents: dirname(destination) }
-    },
-    catch: (error) => error instanceof UsageError ? error : new UsageError({ message: `Could not install the upim skill: ${String(error)}` })
-  })
+export const skillDestination = Effect.fn("skill.skillDestination")(function*(options: InstallOptions) {
+  const path = yield* Path.Path
+  if (options.path !== undefined && options.user) {
+    return yield* new UsageError({ message: "Pass either --path or --user, not both." })
+  }
+  const start = options.dir ?? options.cwd ?? process.cwd()
+  if (options.path !== undefined && options.path.trim() !== "") {
+    const expanded = expandHome(options.path.trim(), path)
+    return path.isAbsolute(expanded) ? expanded : path.resolve(path.resolve(start), expanded)
+  }
+  if (options.user) return path.join(homedir(), ".agents", "skills", "upim")
+  return path.join(yield* projectRoot(start), ".agents", "skills", "upim")
+})
+
+export const installSkill = Effect.fn("skill.installSkill")(
+  function*(options: InstallOptions): Effect.fn.Return<{ installed: string; source: string; agents: string }, UsageError, Services> {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const source = yield* skillSource
+    if (!(yield* exists(fs, path.join(source, "SKILL.md")))) {
+      return yield* new UsageError({ message: `Bundled skill is missing at ${source}` })
+    }
+    const destination = yield* skillDestination(options)
+    if (path.resolve(source) === path.resolve(destination)) {
+      return yield* new UsageError({ message: "The skill is already loaded from this checkout. Pass --path or --dir to install it somewhere else." })
+    }
+    const copied = yield* Effect.gen(function*() {
+      yield* fs.makeDirectory(path.dirname(destination), { recursive: true })
+      yield* fs.copy(source, destination, { overwrite: true })
+      return yield* fs.readFileString(path.join(destination, "SKILL.md"))
+    }).pipe(Effect.mapError((error) => new UsageError({ message: `Could not install the upim skill: ${error.message}`, cause: error })))
+    if (!copied.startsWith("---\nname: upim\n")) {
+      return yield* new UsageError({ message: `Installed skill at ${destination} is not the upim skill` })
+    }
+    return { installed: destination, source, agents: path.dirname(destination) }
+  }
+)
