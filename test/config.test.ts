@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { ConfigProvider, Effect, Path } from "effect"
+import { ConfigProvider, Effect, Layer, Path } from "effect"
 import { activeProfile, applyEnv, profileName, type ConfigFile, type Profile } from "../src/config.ts"
 import { ConfigError } from "../src/errors.ts"
 import { resolveLocations } from "../src/paths.ts"
@@ -19,8 +19,7 @@ const config: ConfigFile = { current: "staging", profiles: { staging: profile } 
 /** Runs with the given variables as the whole environment, so the real process.env never leaks in. */
 const withEnv = <A, E>(variables: Record<string, string>, effect: Effect.Effect<A, E, Path.Path>) =>
   Effect.runPromise(effect.pipe(
-    Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(variables))),
-    Effect.provide(Path.layer)
+    Effect.provide(Layer.mergeAll(ConfigProvider.layer(ConfigProvider.fromUnknown(variables)), Path.layer))
   ))
 
 test("environment overrides apply per run and blank variables mean unset", async () => {
