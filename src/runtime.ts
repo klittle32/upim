@@ -1,5 +1,6 @@
 import { emitKeypressEvents, type Key } from "node:readline"
-import { type Cause, Effect, Layer, Option, Path, Queue, Sink, Stdio, Stream, Terminal } from "effect"
+import { NodePath } from "@effect/platform-node"
+import { type Cause, Effect, Layer, Option, Queue, Sink, Stdio, Stream, Terminal } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { UsageError } from "./errors.ts"
@@ -75,7 +76,7 @@ const terminal = Terminal.make({
 
 export const layer = Layer.mergeAll(
   FetchHttpClient.layer,
-  Path.layer,
+  NodePath.layer,
   nodeFileSystem,
   Layer.succeed(Stdio.Stdio, stdio),
   Layer.succeed(Terminal.Terminal, terminal),
