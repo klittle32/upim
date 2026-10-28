@@ -32,6 +32,15 @@ If a command says the profile is not configured, run `upim config init` or `upim
 - A `path` such as `/sku` is the field to fix. Unknown keys are allowed. A `422` from UnoPim is the authority for attribute rules.
 - For a large catalog, use `--pagination-type search_after` and `--all`. `--all` fails, rather than returning a partial catalog, if it hits `--max-pages` (default 1000) or a repeated `links.next`. Raise `--max-pages`, or resume from the `page` or `search_after` in the reported URL. A finished walk has `links.next` null.
 
+## Extensions
+
+Optional packages such as DAM are extension catalogs that a profile enables. `upim endpoints --json` is still the truth: extension actions appear there, tagged `"extension": "<name>"`, only when the active profile enables them, and are called as `upim ext <extension> <resource> <action>`.
+
+- `upim extensions list --json` shows installed extensions and whether this profile enables them. Do not call an extension that is not enabled; the CLI refuses with a `ConfigError` that names the fix.
+- If the user says the host has a package installed, run `upim extensions probe <name> --json` (GET only). `present` means the host serves it; then `upim extensions enable <name>` turns it on for the profile. A probe never enables anything.
+- `UPIM_EXTENSIONS=dam` enables an extension for one command without changing the config.
+- Extension bodies are not checked locally. Read `upim describe ext <extension> <resource> <action> --json` for the path and flags, and treat a `422` as the field reference.
+
 ## Product values
 
 The static schema only checks the envelope: `sku`, `family`, `type`, and the buckets `common`, `categories`, `channel_specific`, and `channel_locale_specific`.

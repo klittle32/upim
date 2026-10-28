@@ -83,6 +83,7 @@ Environment variables override the selected profile and are not written back:
 | `UPIM_USERNAME` | Robot username |
 | `UPIM_PASSWORD` | Robot password |
 | `UPIM_PROFILE` | Profile name |
+| `UPIM_EXTENSIONS` | Comma-separated extensions to enable for this run, for example `dam,acme-sync` |
 | `UPIM_CONFIG_FILE` | Config file, same as `--config` |
 | `UPIM_CONFIG_HOME` | Directory that contains `config.json` |
 | `UPIM_STATE_HOME` | Directory that contains `tokens.json` |
@@ -122,6 +123,56 @@ Start with `upim endpoints --json`. Each action includes the `describe` command 
 `upim --wizard` walks through a command in the terminal. It needs a TTY.
 
 The base URL is the site root, for example `https://pim.example.com`, not a path ending in `/api/v1/rest`.
+
+## Extensions
+
+The core catalog is the closed UnoPim 3.1 contract. Optional packages such as [UnoPim DAM](https://github.com/unopim/unopim-digital-asset-management) and private routes live in **extensions**: catalog fragments with the same resource and action shape, which a profile turns on. Definitions are shared; enablement is per host.
+
+```json
+{
+  "current": "dev",
+  "profiles": {
+    "dev": { "baseUrl": "https://dev.pim.example", "clientId": "...", "clientSecret": "...", "extensions": ["dam"] },
+    "vendor": { "baseUrl": "https://vendor.example", "clientId": "...", "clientSecret": "...", "extensions": [] }
+  }
+}
+```
+
+```bash
+upim extensions list                 # installed fragments and whether this profile enables them
+upim extensions probe dam            # GET the fragment's sentinel route: present, absent, auth, forbidden
+upim extensions enable dam           # writes the profile's extensions list
+upim ext dam directories list        # extension commands live under upim ext <extension>
+upim describe ext dam assets upload  # same field reference as core commands
+UPIM_EXTENSIONS=dam upim endpoints   # one-run override, not written back
+```
+
+`upim endpoints --json` lists core actions plus the enabled extension actions, each tagged with `"extension": "dam"`. Installed but disabled fragments appear only in `upim extensions list`; calling one fails with a JSON error that names the enable command rather than a raw 404. A probe never enables anything and is not a version check.
+
+`dam` ships inside upim and covers the DAM 3.x routes for assets, directories, comments, tags, properties, linked resources, and shares. Two routes are left out until upim has a binary `--output` flag: the byte download `GET /api/v1/rest/assets/download/{id}` and the signed-URL download, which does not use OAuth.
+
+A custom extension is a JSON file, not code. Put it in `.upim/extensions/<name>.json` in the project (the git root or the current directory) so it can be committed next to the integration that uses it, or in the user config directory next to `config.json` (`~/.config/upim/extensions/`). Names are lowercase with dashes and must be unique; a custom fragment may not reuse a built-in name. Extension bodies are not checked locally. A `422` from the host is the schema.
+
+```json
+{
+  "name": "acme-sync",
+  "summary": "Acme product sync",
+  "probe": { "method": "GET", "path": "/api/v1/rest/acme/jobs" },
+  "resources": [
+    {
+      "name": "jobs",
+      "summary": "Sync jobs",
+      "actions": [
+        { "name": "list", "summary": "List sync jobs", "method": "GET", "path": "/api/v1/rest/acme/jobs", "list": true },
+        { "name": "get", "summary": "Get one job", "method": "GET", "path": "/api/v1/rest/acme/jobs/{id}", "args": ["id"] },
+        { "name": "start", "summary": "Start a job", "method": "POST", "path": "/api/v1/rest/acme/jobs", "body": "required" }
+      ]
+    }
+  ]
+}
+```
+
+Action fields: `method`, `path` (with `{param}` placeholders listed in `args`), `body` (`required` or `optional`, adds `--data` and `--file`), `list` (adds the paging and `--filter` flags), `upload` with optional `fileField` (multipart `--file`), and `query` specs that become flags. `children` nests resources.
 
 ## Fields and validation
 

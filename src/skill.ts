@@ -10,7 +10,7 @@ const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 export const skillSource = () => join(packageRoot, "skills", "upim")
 
-const projectRoot = (start: string) => {
+export const projectRoot = (start: string) => {
   let current = resolve(start)
   let packageDir: string | undefined
   while (true) {

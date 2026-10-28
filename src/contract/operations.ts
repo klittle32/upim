@@ -1,5 +1,5 @@
 import type { Schema } from "effect"
-import type { HttpMethod } from "../catalog.ts"
+import type { ExtensionTag, HttpMethod } from "../catalog.ts"
 import {
   AssociationFieldWrite,
   AssociationTypePatch,
@@ -389,6 +389,16 @@ export const contracts: Readonly<Record<string, Contract>> = {
 }
 
 export const contractKey = (method: HttpMethod, path: string) => `${method} ${path}`
+
+/** Extension actions share one contract: bodies are passed through unchecked and the host's 422 is the schema. */
+export const extensionContract = (extension: ExtensionTag): Contract => ({
+  docs: extension.docs ?? "",
+  notes: [
+    `Extension "${extension.name}": ${extension.summary}`,
+    "This action exists only when the selected profile enables the extension. Bodies are not checked locally; a 422 from the host is the schema."
+  ],
+  success: ok("OK")
+})
 
 export const contractFor = (method: HttpMethod, path: string): Contract => {
   const contract = contracts[contractKey(method, path)]
