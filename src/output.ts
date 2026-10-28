@@ -22,7 +22,7 @@ export const printFailure = (error: unknown) => {
           ? { status: error.status, method: error.method, url: error.url, body: error.body }
           : {}),
         ...(error._tag === "AuthError" && error.details !== undefined ? { details: error.details } : {}),
-        ...(error._tag === "AuthError" && error.cause !== undefined ? { cause: describeCause(error.cause) } : {})
+        ...("cause" in error && error.cause !== undefined ? { cause: describeCause(error.cause) } : {})
       }
     : { error: "Error", message: error instanceof Error ? error.message : String(error), path: null }
   const compact = !process.stderr.isTTY

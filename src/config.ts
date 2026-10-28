@@ -9,7 +9,9 @@ export const ProfileSchema = Schema.Struct({
   clientId: Schema.String,
   clientSecret: Schema.String,
   username: Schema.optional(Schema.String),
-  password: Schema.optional(Schema.String)
+  password: Schema.optional(Schema.String),
+  /** Extension catalogs this host has installed. Definitions are shared; enablement is per profile. */
+  extensions: Schema.optional(Schema.Array(Schema.String))
 })
 
 export type Profile = typeof ProfileSchema.Type
@@ -88,13 +90,23 @@ export const activeProfile = (config: ConfigFile, requested: string | undefined)
   return applyEnv(profile)
 }
 
+/** Parse `UPIM_EXTENSIONS=dam,acme-sync`. Unset or blank means "use the profile". */
+export const parseExtensionList = (value: string | undefined): readonly string[] | undefined => {
+  if (value === undefined || value.trim() === "") return undefined
+  return [...new Set(value.split(",").map((name) => name.trim()).filter((name) => name !== ""))]
+}
+
 export const applyEnv = (profile: Profile): Profile => ({
   baseUrl: process.env.UPIM_BASE_URL?.trim() || profile.baseUrl,
   clientId: process.env.UPIM_CLIENT_ID?.trim() || profile.clientId,
   clientSecret: process.env.UPIM_CLIENT_SECRET?.trim() || profile.clientSecret,
   username: process.env.UPIM_USERNAME?.trim() || profile.username,
-  password: process.env.UPIM_PASSWORD ?? profile.password
+  password: process.env.UPIM_PASSWORD ?? profile.password,
+  extensions: parseExtensionList(process.env.UPIM_EXTENSIONS) ?? profile.extensions
 })
+
+/** Names of the extensions the active profile enables, after the environment override. */
+export const enabledExtensions = (profile: Profile): readonly string[] => profile.extensions ?? []
 
 export const locationsFrom = (configFlag: string | undefined) => resolveLocations(configFlag)
 

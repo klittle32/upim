@@ -22,6 +22,8 @@ export type Action = {
   readonly body?: "required" | "optional"
   readonly list?: boolean
   readonly upload?: boolean
+  /** Multipart field name for the uploaded file. Defaults to "file". */
+  readonly fileField?: string
   readonly query?: readonly QuerySpec[]
 }
 
@@ -637,20 +639,30 @@ export const resources: readonly Resource[] = [
   }
 ]
 
+/** The extension a flattened action came from. Core actions carry none. */
+export type ExtensionTag = {
+  readonly name: string
+  readonly summary: string
+  readonly docs?: string
+}
+
 export type FlatAction = {
   readonly command: readonly string[]
   readonly action: Action
+  readonly extension?: ExtensionTag
 }
 
 export const flatten = (
   nodes: readonly Resource[] = resources,
-  prefix: readonly string[] = []
+  prefix: readonly string[] = [],
+  extension?: ExtensionTag
 ): readonly FlatAction[] =>
   nodes.flatMap((node) => {
     const command = [...prefix, node.name]
     const own = (node.actions ?? []).map((action) => ({
       command: [...command, action.name],
-      action
+      action,
+      ...(extension ? { extension } : {})
     }))
-    return [...own, ...flatten(node.children ?? [], command)]
+    return [...own, ...flatten(node.children ?? [], command, extension)]
   })

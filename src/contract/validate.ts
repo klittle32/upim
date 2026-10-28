@@ -1,7 +1,7 @@
 import { Effect, Schema, SchemaIssue } from "effect"
 import type { Action } from "../catalog.ts"
 import { UsageError } from "../errors.ts"
-import { contractFor, validationNote } from "./operations.ts"
+import { contractKey, contracts, validationNote } from "./operations.ts"
 import { Filters } from "./schemas.ts"
 
 const encodePointer = (key: PropertyKey) =>
@@ -36,8 +36,9 @@ const failure = (error: unknown, prefix: string) =>
   })
 
 export const checkBody = (action: Action, body: unknown) => {
-  const contract = contractFor(action.method, action.path)
-  if (contract.body === undefined || body === undefined) return Effect.void
+  // Extension actions have no contract. A 422 from the host is their schema.
+  const contract = contracts[contractKey(action.method, action.path)]
+  if (contract?.body === undefined || body === undefined) return Effect.void
   return Schema.decodeEffect(contract.body.schema)(body).pipe(
     Effect.mapError((error) => failure(error, `Local schema check failed for ${action.method} ${action.path}.`)),
     Effect.asVoid

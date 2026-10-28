@@ -3,17 +3,19 @@ import { basename } from "node:path"
 import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Clock, Effect, Option } from "effect"
+import { Clock, Effect, Option, Stdio } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { AppError } from "./errors.ts"
 import type { HttpClientEnv, StorageEnv } from "./client.ts"
-import { flatten, resources, type Action, type FlatAction, type Resource } from "./catalog.ts"
+import { flatten, resources, type Action, type ExtensionTag, type FlatAction, type Resource } from "./catalog.ts"
 import { describe, openApiDocument, renderText, type OperationDocument } from "./contract/document.ts"
 import { applyLiveDictionary, attributesFromBody, familyAttributeCodes } from "./contract/live.ts"
 import { checkBody, checkFilters } from "./contract/validate.ts"
 import { call, login, logout, type CallInput, type Session } from "./client.ts"
 import {
   activeProfile,
+  applyEnv,
+  enabledExtensions,
   loadConfig,
   locationsFrom,
   maskProfile,
@@ -24,6 +26,15 @@ import {
   type Profile
 } from "./config.ts"
 import { ConfigError, UsageError } from "./errors.ts"
+import {
+  enableHint,
+  flattenExtension,
+  loadExtensions,
+  selectEnabled,
+  tagFor,
+  type Extension,
+  type InstalledExtension
+} from "./extensions.ts"
 import { emit } from "./output.ts"
 import { ask, confirm } from "./prompt.ts"
 import { fillPath, mergeFilters, parsePair } from "./query.ts"
@@ -131,12 +142,34 @@ const openSession = (flags: Globals) =>
 const present = (result: { readonly status: number; readonly headers: Record<string, string>; readonly body: unknown }, meta: boolean) =>
   meta ? { status: result.status, headers: result.headers, body: result.body } : result.body
 
-const runCall = (input: CallInput) =>
+const requireEnabled = (profile: Profile, name: string, extension: ExtensionTag) =>
+  enabledExtensions(profile).includes(extension.name)
+    ? Effect.void
+    : Effect.fail(new ConfigError({
+      message: `Extension "${extension.name}" is installed but not enabled for profile "${name}". ${enableHint(extension.name)}`
+    }))
+
+const runCall = (input: CallInput, extension?: ExtensionTag) =>
   Effect.gen(function*() {
     const flags = yield* globals()
-    const { session } = yield* openSession(flags)
+    const { session, name } = yield* openSession(flags)
+    if (extension !== undefined) yield* requireEnabled(session.profile, name, extension)
     const result = yield* call(session, input)
     emit(present(result, flags.meta), flags.json)
+  })
+
+/**
+ * The extensions the selected profile enables, without requiring tokens. A
+ * missing profile means core only, so `upim endpoints` works before setup.
+ */
+const enabledFor = (flags: Globals, installed: readonly InstalledExtension[]) =>
+  Effect.gen(function*() {
+    const locations = locationsFrom(optionValue(flags.config))
+    const config = yield* loadConfig(locations)
+    const name = profileName(config, optionValue(flags.profile))
+    const stored = config.profiles[name]
+    const names = stored ? enabledExtensions(applyEnv(stored)) : []
+    return { name, names, ...selectEnabled(installed, names) }
   })
 
 const listQuery = (flags: Record<string, unknown>) => {
@@ -206,7 +239,7 @@ const actionConfig = (action: Action) => {
   return config
 }
 
-const runAction = (action: Action, flags: Record<string, any>) =>
+const runAction = (action: Action, flags: Record<string, any>, extension?: ExtensionTag) =>
   Effect.gen(function*() {
     const params: Record<string, string> = {}
     for (const name of action.args ?? []) params[name] = String(flags[name])
@@ -248,7 +281,7 @@ const runAction = (action: Action, flags: Record<string, any>) =>
         try: () => readFile(filePath),
         catch: (error) => new UsageError({ message: `Could not read ${filePath}: ${String(error)}` })
       })
-      form = { file: new File([bytes], basename(filePath)) }
+      form = { [action.fileField ?? "file"]: new File([bytes], basename(filePath)) }
       for (const spec of action.query ?? []) {
         const value = spec.kind === "boolean"
           ? undefined
@@ -272,23 +305,23 @@ const runAction = (action: Action, flags: Record<string, any>) =>
       headers,
       followPages,
       maxPages
-    })
+    }, extension)
   })
 
 type CliCommand = Command.Command<string, {}, {}, AppError, HttpClientEnv | StorageEnv>
 
 const fieldReference = (command: readonly string[]) => `Field reference: upim describe ${command.join(" ")}`
 
-const buildAction = (command: readonly string[], action: Action): CliCommand =>
-  Command.make(action.name, actionConfig(action) as never, (flags) => runAction(action, flags as Record<string, any>)).pipe(
+const buildAction = (command: readonly string[], action: Action, extension?: ExtensionTag): CliCommand =>
+  Command.make(action.name, actionConfig(action) as never, (flags) => runAction(action, flags as Record<string, any>, extension)).pipe(
     Command.withDescription(`${action.summary} ${fieldReference(command)}`)
   ) as CliCommand
 
-const buildResource = (resource: Resource, prefix: readonly string[] = []): CliCommand => {
+const buildResource = (resource: Resource, prefix: readonly string[] = [], extension?: ExtensionTag): CliCommand => {
   const command = [...prefix, resource.name]
   const children = [
-    ...(resource.actions ?? []).map((action) => buildAction([...command, action.name], action)),
-    ...(resource.children ?? []).map((child) => buildResource(child, command))
+    ...(resource.actions ?? []).map((action) => buildAction([...command, action.name], action, extension)),
+    ...(resource.children ?? []).map((child) => buildResource(child, command, extension))
   ]
   return Command.make(resource.name).pipe(
     Command.withDescription(`${resource.summary} ${fieldReference(command)}`),
@@ -429,7 +462,8 @@ const configCommand = Command.make("config").pipe(
             clientId: "client-id",
             clientSecret: "client-secret",
             username: "api-robot",
-            password: "optional-robot-password"
+            password: "optional-robot-password",
+            extensions: []
           }
         }
       }, flags.json)
@@ -576,43 +610,59 @@ const apiCommand = Command.make("api", {
   })
 })).pipe(Command.withDescription("Call any UnoPim path. Authentication and refresh still apply"))
 
-const endpointsCommand = Command.make("endpoints", {}, () => Effect.gen(function*() {
-  const flags = yield* globals()
-  const commands = flatten().map((entry: FlatAction) => ({
-    command: ["upim", ...entry.command].join(" "),
-    method: entry.action.method,
-    path: entry.action.path,
-    summary: entry.action.summary,
-    describe: `upim describe ${entry.command.join(" ")} --json`
-  }))
-  emit({
-    api: "UnoPim 3.1",
-    docs: "https://devdocs.unopim.com/3.1/api/",
-    errors: "stderr",
-    start: [
-      "upim endpoints --json",
-      "upim describe products create --json",
-      "upim products create --data '<json>'"
-    ],
-    commands
-  }, flags.json)
-})).pipe(Command.withDescription("List every built-in UnoPim 3.1 action"))
+const endpointRow = (entry: FlatAction) => ({
+  command: ["upim", ...entry.command].join(" "),
+  method: entry.action.method,
+  path: entry.action.path,
+  summary: entry.action.summary,
+  describe: `upim describe ${entry.command.join(" ")} --json`,
+  ...(entry.extension ? { extension: entry.extension.name } : {})
+})
+
+const endpointsCommand = (installed: readonly InstalledExtension[]) =>
+  Command.make("endpoints", {}, () => Effect.gen(function*() {
+    const flags = yield* globals()
+    const enabled = yield* enabledFor(flags, installed)
+    emit({
+      api: "UnoPim 3.1",
+      docs: "https://devdocs.unopim.com/3.1/api/",
+      errors: "stderr",
+      start: [
+        "upim endpoints --json",
+        "upim describe products create --json",
+        "upim products create --data '<json>'"
+      ],
+      extensions: {
+        profile: enabled.name,
+        enabled: enabled.extensions.map((extension) => extension.name),
+        installed: installed.map((entry) => entry.extension.name),
+        ...(enabled.unknown.length > 0
+          ? { unknown: enabled.unknown, hint: "These names are enabled but no extension with that name is installed. Add .upim/extensions/<name>.json or run `upim extensions disable <name>`." }
+          : {})
+      },
+      commands: [
+        ...flatten().map(endpointRow),
+        ...enabled.extensions.flatMap(flattenExtension).map(endpointRow)
+      ]
+    }, flags.json)
+  })).pipe(Command.withDescription("List every UnoPim 3.1 action plus the extension actions the selected profile enables. Extension rows carry an `extension` field."))
 
 const hasValueEnvelope = (document: OperationDocument) => {
   const properties = document.body?.schema.properties
   return typeof properties === "object" && properties !== null && "values" in properties
 }
 
-const describeCommand = Command.make("describe", {
+const describeCommand = (installed: readonly InstalledExtension[]) => Command.make("describe", {
   target: Argument.String("target").pipe(
     Argument.variadic,
-    Argument.withDescription("Resource and optional action, for example products create")
+    Argument.withDescription("Resource and optional action, for example products create, or ext dam assets list")
   ),
   live: bool("live", "Merge this server's attribute dictionary into a product value schema"),
   family: optionalString("family", "With --live, keep only attributes assigned to this family")
 }, (flags) => Effect.gen(function*() {
   const parent = yield* globals()
-  let document = yield* describe(flags.target.map((part) => String(part)))
+  const enabled = yield* enabledFor(parent, installed)
+  let document = yield* describe(flags.target.map((part) => String(part)), enabled.extensions)
   if (flags.live) {
     if (document.kind !== "operation" || !hasValueEnvelope(document)) {
       return yield* new UsageError({ message: "--live applies to product create, update, and patch. Example: upim describe products create --live --family default" })
@@ -656,15 +706,165 @@ const schemaCommand = Command.make("schema", {}, () => Effect.gen(function*() {
   emit(openApiDocument(), parent.json)
 })).pipe(Command.withDescription("Print the OpenAPI 3.1 contract generated from the Effect schemas"))
 
-const app = root.pipe(Command.withSubcommands([
-  configCommand,
-  authCommand,
-  apiCommand,
-  endpointsCommand,
-  describeCommand,
-  schemaCommand,
-  skillCommand,
-  ...resources.map((resource) => buildResource(resource))
-]))
+const extCommand = (installed: readonly InstalledExtension[]) =>
+  Command.make("ext", {}, () => Effect.gen(function*() {
+    const flags = yield* globals()
+    const enabled = yield* enabledFor(flags, installed)
+    emit({
+      profile: enabled.name,
+      usage: "upim ext <extension> <resource> <action>",
+      enabled: enabled.extensions.map((extension) => extension.name),
+      installed: installed.map((entry) => entry.extension.name),
+      hint: "upim extensions list shows every installed extension. upim endpoints --json lists the enabled actions."
+    }, flags.json)
+  })).pipe(
+    Command.withDescription("Extension catalogs: upim ext <extension> <resource> <action>. Only extensions the selected profile enables may be called."),
+    Command.withSubcommands(installed.map(({ extension }) =>
+      Command.make(extension.name).pipe(
+        Command.withDescription(`${extension.summary} Enable with: upim extensions enable ${extension.name}`),
+        Command.withSubcommands(extension.resources.map((resource) => buildResource(resource, ["ext", extension.name], tagFor(extension))))
+      ) as CliCommand
+    ))
+  )
 
-export const run = Command.run(app, { version })
+const probeOutcome = (status: number) => {
+  if (status >= 200 && status < 300) return "present"
+  if (status === 404) return "absent"
+  if (status === 401) return "auth"
+  if (status === 403) return "forbidden"
+  return `http-${status}`
+}
+
+const probeHints: Readonly<Record<string, string>> = {
+  present: "The host answered the probe. Enable the extension if it is not enabled yet.",
+  absent: "The host does not serve this route. The package is probably not installed.",
+  auth: "Authentication failed even after a refresh. Check the profile credentials.",
+  forbidden: "Authenticated, but the integration may lack the scope for this package.",
+  unreachable: "The host could not be reached."
+}
+
+const probeExtension = (session: Session, extension: Extension) =>
+  Effect.gen(function*() {
+    if (extension.probe === undefined) {
+      return { extension: extension.name, probe: null, status: null, result: "no-probe", hint: "This extension defines no probe request." }
+    }
+    const probe = `${extension.probe.method} ${extension.probe.path}`
+    const status = yield* call(session, { method: extension.probe.method, path: extension.probe.path, query: { limit: "1" } }).pipe(
+      Effect.map((result) => result.status),
+      Effect.catchTags({
+        ApiError: (error) => Effect.succeed(error.status),
+        TransportError: () => Effect.succeed(0)
+      })
+    )
+    const result = status === 0 ? "unreachable" : probeOutcome(status)
+    return { extension: extension.name, probe, status: status === 0 ? null : status, result, hint: probeHints[result] ?? "Unexpected status. Inspect the host." }
+  })
+
+const requireInstalled = (installed: readonly InstalledExtension[], name: string) =>
+  installed.some((entry) => entry.extension.name === name)
+    ? Effect.void
+    : Effect.fail(new ConfigError({
+      message: `No extension named "${name}" is installed. Installed: ${installed.map((entry) => entry.extension.name).join(", ")}. Custom fragments load from .upim/extensions/*.json in the project and from the user config directory.`
+    }))
+
+const setExtensions = (flags: Globals, installed: readonly InstalledExtension[], name: string, change: (current: readonly string[]) => readonly string[]) =>
+  Effect.gen(function*() {
+    yield* requireInstalled(installed, name)
+    const locations = locationsFrom(optionValue(flags.config))
+    const config = yield* loadConfig(locations)
+    const profile = profileName(config, optionValue(flags.profile))
+    const stored = config.profiles[profile]
+    if (stored === undefined) {
+      return yield* new ConfigError({ message: `Profile "${profile}" is not configured. Run \`upim config init\` first.` })
+    }
+    // The stored list, not the UPIM_EXTENSIONS override, is what gets written back.
+    const extensions = change(stored.extensions ?? [])
+    yield* saveConfig(locations, {
+      ...config,
+      current: config.current ?? profile,
+      profiles: { ...config.profiles, [profile]: { ...stored, extensions } }
+    })
+    emit({ profile, extensions, path: locations.configPath }, flags.json)
+  })
+
+const extensionsCommand = (installed: readonly InstalledExtension[]) =>
+  Command.make("extensions").pipe(
+    Command.withDescription("List, enable, disable, and probe extension catalogs for the selected profile"),
+    Command.withSubcommands([
+      Command.make("list", {}, () => Effect.gen(function*() {
+        const flags = yield* globals()
+        const enabled = yield* enabledFor(flags, installed)
+        emit({
+          profile: enabled.name,
+          enabled: enabled.names,
+          ...(enabled.unknown.length > 0 ? { unknown: enabled.unknown } : {}),
+          extensions: installed.map(({ extension, source }) => ({
+            name: extension.name,
+            summary: extension.summary,
+            source,
+            enabled: enabled.names.includes(extension.name),
+            resources: extension.resources.map((resource) => resource.name),
+            actions: flattenExtension(extension).length,
+            probe: extension.probe ? `${extension.probe.method} ${extension.probe.path}` : null,
+            docs: extension.docs ?? null
+          }))
+        }, flags.json)
+      })).pipe(Command.withDescription("Show installed extensions and whether the selected profile enables them")),
+      Command.make("enable", {
+        name: Argument.String("name").pipe(Argument.withDescription("Extension name, for example dam"))
+      }, (flags) => Effect.gen(function*() {
+        const parent = yield* globals()
+        yield* setExtensions(parent, installed, flags.name, (current) => current.includes(flags.name) ? current : [...current, flags.name])
+      })).pipe(Command.withDescription("Add an extension to the selected profile and save the config")),
+      Command.make("disable", {
+        name: Argument.String("name").pipe(Argument.withDescription("Extension name"))
+      }, (flags) => Effect.gen(function*() {
+        const parent = yield* globals()
+        yield* setExtensions(parent, installed, flags.name, (current) => current.filter((entry) => entry !== flags.name))
+      })).pipe(Command.withDescription("Remove an extension from the selected profile and save the config")),
+      Command.make("probe", {
+        name: Argument.String("name").pipe(Argument.optional, Argument.withDescription("Extension to probe. Defaults to every installed extension"))
+      }, (flags) => Effect.gen(function*() {
+        const parent = yield* globals()
+        const target = optionValue(flags.name)
+        if (target !== undefined) yield* requireInstalled(installed, target)
+        const { session, name } = yield* openSession(parent)
+        const chosen = installed.filter((entry) => target === undefined || entry.extension.name === target)
+        const results = yield* Effect.forEach(chosen, (entry) => probeExtension(session, entry.extension))
+        emit({
+          profile: name,
+          baseUrl: session.profile.baseUrl,
+          note: "A probe reports whether the host serves the extension's sentinel route. It does not enable anything and is not a version check.",
+          results: results.map((result) => ({ ...result, enabled: enabledExtensions(session.profile).includes(result.extension) }))
+        }, parent.json)
+      })).pipe(Command.withDescription("Ask the host whether each extension's package is installed (GET only)"))
+    ])
+  )
+
+const buildApp = (installed: readonly InstalledExtension[]) =>
+  root.pipe(Command.withSubcommands([
+    configCommand,
+    authCommand,
+    apiCommand,
+    endpointsCommand(installed),
+    describeCommand(installed),
+    schemaCommand,
+    skillCommand,
+    extCommand(installed),
+    extensionsCommand(installed),
+    ...resources.map((resource) => buildResource(resource))
+  ]))
+
+/** The --config flag has to be known before the command tree exists, because custom fragments live next to the config. */
+const configFlagFromArgs = (args: readonly string[]) => {
+  const index = args.indexOf("--config")
+  if (index >= 0) return args[index + 1]
+  return args.find((arg) => arg.startsWith("--config="))?.slice("--config=".length)
+}
+
+export const run = Effect.gen(function*() {
+  const stdio = yield* Stdio.Stdio
+  const args = yield* stdio.args
+  const installed = yield* loadExtensions(process.cwd(), locationsFrom(configFlagFromArgs(args)))
+  return yield* Command.run(buildApp(installed), { version })
+})

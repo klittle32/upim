@@ -6,7 +6,8 @@
       "clientId": "client-id",
       "clientSecret": "client-secret",
       "username": "api-robot",
-      "password": "optional-robot-password"
+      "password": "optional-robot-password",
+      "extensions": []
     }
   }
 }

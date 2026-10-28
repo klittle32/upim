@@ -1,7 +1,8 @@
 import { Effect, Schema } from "effect"
 import { flatten, resources, type Action, type FlatAction, type Resource } from "../catalog.ts"
 import { UsageError } from "../errors.ts"
-import { contractFor, sharedErrors, validationNote, type Contract } from "./operations.ts"
+import { extensionTree, flattenExtension, type Extension } from "../extensions.ts"
+import { contractFor, extensionContract, sharedErrors, validationNote, type Contract } from "./operations.ts"
 
 export type ParameterDocument = {
   readonly name: string
@@ -195,7 +196,7 @@ export const exampleCommand = (entry: FlatAction, example: unknown) => {
 }
 
 export const operationDocument = (entry: FlatAction): OperationDocument => {
-  const contract = contractFor(entry.action.method, entry.action.path)
+  const contract = entry.extension ? extensionContract(entry.extension) : contractFor(entry.action.method, entry.action.path)
   const command = ["upim", ...entry.command].join(" ")
   const example = contract.body?.example
   return {
@@ -229,7 +230,11 @@ export const operationDocument = (entry: FlatAction): OperationDocument => {
     ],
     notes: contract.notes,
     live: contract.live ?? [],
-    validation: contract.body ? validationNote : "This call has no local JSON body check."
+    validation: contract.body
+      ? validationNote
+      : entry.extension
+        ? "Extension action: no local JSON body check. A 422 from the host is the schema."
+        : "This call has no local JSON body check."
   }
 }
 
@@ -244,29 +249,42 @@ const findResource = (nodes: readonly Resource[], segments: readonly string[]): 
 const matches = (entry: FlatAction, segments: readonly string[]) =>
   segments.every((segment, index) => entry.command[index] === segment)
 
-export const describe = (segments: readonly string[]): Effect.Effect<DescribeDocument, UsageError> => {
+/** Describe core commands plus the extensions the selected profile enables. */
+export const describe = (
+  segments: readonly string[],
+  extensions: readonly Extension[] = []
+): Effect.Effect<DescribeDocument, UsageError> => {
   if (segments.length === 0) {
     return Effect.succeed({
       kind: "index",
       docs: "https://devdocs.unopim.com/3.1/api/",
       errors: "stderr",
       usage: "upim describe <resource> [action] [--json]",
-      resources: resources.map((resource) => ({
-        name: resource.name,
-        summary: resource.summary,
-        describe: `upim describe ${resource.name}`
-      }))
+      resources: [
+        ...resources.map((resource) => ({
+          name: resource.name,
+          summary: resource.summary,
+          describe: `upim describe ${resource.name}`
+        })),
+        ...extensions.map((extension) => ({
+          name: `ext ${extension.name}`,
+          summary: extension.summary,
+          describe: `upim describe ext ${extension.name}`
+        }))
+      ]
     })
   }
-  const entries = flatten().filter((entry) => matches(entry, segments))
+  const entries = [...flatten(), ...extensions.flatMap(flattenExtension)].filter((entry) => matches(entry, segments))
   if (entries.length === 0) {
     return Effect.fail(new UsageError({
-      message: `No upim command matches \`${segments.join(" ")}\`. Run \`upim describe\` to list resources.`
+      message: segments[0] === "ext"
+        ? `No enabled extension command matches \`${segments.join(" ")}\`. Run \`upim extensions list\` to see installed extensions and whether this profile enables them.`
+        : `No upim command matches \`${segments.join(" ")}\`. Run \`upim describe\` to list resources.`
     }))
   }
   const exact = entries.find((entry) => entry.command.length === segments.length)
   if (exact) return Effect.succeed(operationDocument(exact))
-  const resource = findResource(resources, segments)
+  const resource = findResource([...resources, extensionTree(extensions)], segments)
   return Effect.succeed({
     kind: "group",
     command: `upim describe ${segments.join(" ")}`,
