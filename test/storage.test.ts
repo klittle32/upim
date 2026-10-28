@@ -4,22 +4,25 @@ import { existsSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileS
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { Effect, Fiber, FileSystem, Layer, Path, PlatformError } from "effect"
+import { NodeCrypto } from "@effect/platform-node"
+import { type Crypto, Effect, Fiber, FileSystem, Layer, Path, PlatformError } from "effect"
 import { emptyConfig, loadConfig, saveConfig, type ConfigFile } from "../src/config.ts"
 import { AuthError, ConfigError } from "../src/errors.ts"
 import { layer as nodeFileSystem } from "../src/filesystem.ts"
 import type { Locations } from "../src/paths.ts"
-import { loadTokens, longestValidPrefix, makeTokenStore, saveTokens, type TokenSet } from "../src/tokens.ts"
+import { loadTokens, longestValidPrefix, makeTokenStore, saveTokens, withTokenLock, type TokenSet } from "../src/tokens.ts"
 
-const storage = Layer.mergeAll(nodeFileSystem, Path.layer)
+const storage = Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer)
 
-const live = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
+type Services = FileSystem.FileSystem | Path.Path | Crypto.Crypto
+
+const live = <A, E>(effect: Effect.Effect<A, E, Services>) =>
   Effect.runPromise(effect.pipe(Effect.provide(storage)))
 
-const run = <A>(effect: Effect.Effect<A, unknown, FileSystem.FileSystem | Path.Path>, fileSystem: FileSystem.FileSystem) =>
+const run = <A>(effect: Effect.Effect<A, unknown, Services>, fileSystem: FileSystem.FileSystem) =>
   Effect.runPromise(effect.pipe(
     Effect.provideService(FileSystem.FileSystem, fileSystem),
-    Effect.provide(Path.layer)
+    Effect.provide(Layer.mergeAll(Path.layer, NodeCrypto.layer))
   ))
 
 const locations = (directory: string): Locations => ({
@@ -287,6 +290,33 @@ test("waiting for a live lock times out with a typed error and the lock is relea
     return held
   }))
   assert.equal(interrupted, true)
+  assert.equal(existsSync(lock), false)
+})
+
+test("release leaves a lock that another process took over after a stale timeout", async () => {
+  const paths = scratch()
+  const lock = `${paths.tokenPath}.lock`
+  const successor = JSON.stringify({ pid: 0, owner: "0:successor" })
+  const { warnings } = await live(quiet(withTokenLock(paths)(Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    const mine = JSON.parse(yield* fs.readFileString(lock)) as { owner: string; pid: number }
+    assert.equal(mine.pid, process.pid)
+    assert.match(mine.owner, new RegExp(`^${process.pid}:`))
+    // Simulate a waiter that decided this lock was stale and took it over.
+    yield* fs.writeFileString(lock, successor)
+  }))))
+  assert.equal(existsSync(lock), true)
+  assert.equal(readFileSync(lock, "utf8"), successor)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0]!, /0:successor took it over/)
+
+  // A lock file that no longer parses is treated as ours and cleaned up.
+  await live(withTokenLock(paths)(Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.writeFileString(lock, "garbage")
+  })))
+  assert.equal(existsSync(lock), false)
+  await live(withTokenLock(paths)(Effect.void))
   assert.equal(existsSync(lock), false)
 })
 

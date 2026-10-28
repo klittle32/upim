@@ -1,5 +1,5 @@
 import { emitKeypressEvents, type Key } from "node:readline"
-import { NodePath } from "@effect/platform-node"
+import { NodeCrypto, NodePath } from "@effect/platform-node"
 import { type Cause, Effect, Layer, Option, Queue, Sink, Stdio, Stream, Terminal } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
@@ -77,6 +77,7 @@ const terminal = Terminal.make({
 export const layer = Layer.mergeAll(
   FetchHttpClient.layer,
   NodePath.layer,
+  NodeCrypto.layer,
   nodeFileSystem,
   Layer.succeed(Stdio.Stdio, stdio),
   Layer.succeed(Terminal.Terminal, terminal),

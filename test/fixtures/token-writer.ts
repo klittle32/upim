@@ -1,6 +1,7 @@
 // Writes `count` token sets for one profile into a shared token file.
 // The storage test runs several copies at once to exercise the file lock.
 import { dirname } from "node:path"
+import { NodeCrypto } from "@effect/platform-node"
 import { Effect, Layer, Path } from "effect"
 import { layer as nodeFileSystem } from "../../src/filesystem.ts"
 import { makeTokenStore } from "../../src/tokens.ts"
@@ -24,5 +25,5 @@ await Effect.runPromise(
       expiresAt: 1_700_000_000_000
     }),
     { discard: true }
-  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer)))
+  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer)))
 )

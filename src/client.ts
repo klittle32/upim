@@ -1,4 +1,4 @@
-import { Clock, Deferred, Effect, Fiber, type FileSystem, type Path, Schema } from "effect"
+import { Clock, type Crypto, Deferred, Effect, Fiber, type FileSystem, type Path, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
@@ -13,7 +13,7 @@ export type Session = {
   readonly store: TokenStore
 }
 
-export type StorageEnv = FileSystem.FileSystem | Path.Path
+export type StorageEnv = FileSystem.FileSystem | Path.Path | Crypto.Crypto
 
 export type CallInput = {
   readonly method: string

@@ -1,4 +1,4 @@
-import { Clock, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
+import { Clock, Crypto, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
 import { AuthError } from "./errors.ts"
 import { isAlreadyExists, isNotFound } from "./filesystem.ts"
 import { warn } from "./output.ts"
@@ -21,7 +21,7 @@ export type TokenFile = typeof TokenFileSchema.Type
 
 const empty = (): TokenFile => ({ profiles: {} })
 
-type Services = FileSystem.FileSystem | Path.Path
+type Services = FileSystem.FileSystem | Path.Path | Crypto.Crypto
 
 /**
  * The longest prefix of `text` that parses as JSON, or undefined.
@@ -121,10 +121,18 @@ const lockPathFor = (locations: Locations) => `${locations.tokenPath}.lock`
 const lockFailure = (path: string) => (error: { readonly message: string }) =>
   new AuthError({ message: `Could not lock ${path}: ${error.message}` })
 
+type Lock = {
+  readonly path: string
+  /** pid plus a random nonce, written into the file so release can tell its own lock from a successor's. */
+  readonly owner: string
+}
+
+const LockHolderSchema = Schema.Struct({ owner: Schema.String })
+
 /** One attempt to create the lock file. Fails with LockBusy while another live process holds it. */
-const tryLock = (fs: FileSystem.FileSystem, lockPath: string, staleMs: number) =>
+const tryLock = (fs: FileSystem.FileSystem, lockPath: string, owner: string, staleMs: number) =>
   Effect.gen(function*() {
-    const holder = `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`
+    const holder = `${JSON.stringify({ pid: process.pid, owner, at: new Date().toISOString() })}\n`
     const created = yield* fs.writeFileString(lockPath, holder, { flag: "wx", mode: 0o600 }).pipe(
       Effect.as(true),
       Effect.catch((error) => isAlreadyExists(error) ? Effect.succeed(false) : Effect.fail(lockFailure(lockPath)(error)))
@@ -134,7 +142,7 @@ const tryLock = (fs: FileSystem.FileSystem, lockPath: string, staleMs: number) =
     if (Option.isNone(info)) return yield* new LockBusy({ path: lockPath, holder: "a process that just released it" })
     const now = yield* Clock.currentTimeMillis
     const modified = Option.getOrElse(info.value.mtime, () => new Date(now)).getTime()
-    const owner = yield* fs.readFileString(lockPath).pipe(Effect.orElseSucceed(() => "unknown"))
+    const current = yield* fs.readFileString(lockPath).pipe(Effect.orElseSucceed(() => "unknown"))
     if (now - modified > staleMs) {
       // Rename first so only one waiter wins the takeover, then drop the renamed file.
       const abandoned = `${lockPath}.stale.${process.pid}`
@@ -143,17 +151,20 @@ const tryLock = (fs: FileSystem.FileSystem, lockPath: string, staleMs: number) =
         Effect.ignore
       )
     }
-    return yield* new LockBusy({ path: lockPath, holder: owner.trim() })
+    return yield* new LockBusy({ path: lockPath, holder: current.trim() })
   })
 
-const acquireLock = (lockPath: string, options: Required<LockOptions>) =>
+const acquireLock = (lockPath: string, options: Required<LockOptions>): Effect.Effect<Lock, AuthError, Services> =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
+    const crypto = yield* Crypto.Crypto
+    const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(lockFailure(lockPath)))
+    const owner = `${process.pid}:${nonce}`
     yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true, mode: 0o700 }).pipe(
       Effect.mapError(lockFailure(lockPath))
     )
-    yield* tryLock(fs, lockPath, options.staleMs).pipe(
+    yield* tryLock(fs, lockPath, owner, options.staleMs).pipe(
       Effect.retry({
         while: (error) => error._tag === "LockBusy",
         schedule: Schedule.spaced(`${options.pollMs} millis`).pipe(
@@ -165,13 +176,28 @@ const acquireLock = (lockPath: string, options: Required<LockOptions>) =>
         message: `Timed out after ${options.waitMs} ms waiting for the token lock ${busy.path} held by ${busy.holder}. Remove the file if that process is gone.`
       }))
     )
-    return lockPath
+    return { path: lockPath, owner }
   })
 
-const releaseLock = (lockPath: string) =>
+/**
+ * Release the lock only while it is still ours. If this process stalled past
+ * the stale timeout, a waiter has taken the lock over, and deleting the file
+ * now would let a third process in while the waiter is mid-refresh.
+ */
+const releaseLock = (lock: Lock) =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
-    yield* fs.remove(lockPath)
+    const text = yield* fs.readFileString(lock.path).pipe(Effect.option)
+    if (Option.isNone(text)) return
+    const holder = yield* Effect.try(() => JSON.parse(text.value) as unknown).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(LockHolderSchema)),
+      Effect.option
+    )
+    if (Option.isSome(holder) && holder.value.owner !== lock.owner) {
+      yield* warn(`Leaving ${lock.path} in place: ${holder.value.owner} took it over after this process held it past the stale timeout`)
+      return
+    }
+    yield* fs.remove(lock.path)
   }).pipe(Effect.ignore)
 
 // One permit per token file keeps fibers in this process from racing each
