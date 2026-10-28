@@ -33,7 +33,7 @@ test("product envelope accepts unknown attribute codes and rejects a missing sku
 
 test("decoded product schema does not drop unknown keys from the caller's body", () => {
   const body = { sku: "shirt-1", family: "default", type: "simple", extra: { keep: true } }
-  Schema.decodeUnknownSync(ProductWrite)(body)
+  Schema.decodeSync(ProductWrite)(body)
   assert.equal(body.extra.keep, true)
 })
 

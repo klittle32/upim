@@ -236,13 +236,14 @@ const obtainTokens = (session: Session, force: boolean) =>
   }))
 
 const with429 = <E, R>(attempt: Effect.Effect<CallResult, E, R>, seen = 0): Effect.Effect<CallResult, E, R> =>
-  Effect.flatMap(attempt, (result) => {
-    if (result.status !== 429 || seen + 1 >= MAX_429) return Effect.succeed(result)
-    return Clock.currentTimeMillis.pipe(
+  Effect.filterOrElse(
+    attempt,
+    (result) => result.status !== 429 || seen + 1 >= MAX_429,
+    (result) => Clock.currentTimeMillis.pipe(
       Effect.flatMap((now) => Effect.sleep(retryDelay(result.headers, seen, now))),
       Effect.flatMap(() => with429(attempt, seen + 1))
     )
-  })
+  )
 
 const oneCall = (session: Session, input: CallInput, tokens: TokenSet | undefined) => {
   const headers: Record<string, string> = { ...(input.headers ?? {}) }

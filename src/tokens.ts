@@ -68,12 +68,13 @@ const parseTokenFile = Effect.fnUntraced(function*(path: string, text: string) {
 export const loadTokens = Effect.fn("tokens.loadTokens")(function*(locations: Locations) {
   const fs = yield* FileSystem.FileSystem
   const text = yield* fs.readFileString(locations.tokenPath).pipe(
+    Effect.asSome,
     Effect.catch((error) => isNotFound(error)
-      ? Effect.succeed(undefined)
+      ? Effect.succeedNone
       : Effect.fail(new AuthError({ message: `Could not read ${locations.tokenPath}: ${error.message}`, cause: error })))
   )
-  if (text === undefined) return empty()
-  return yield* parseTokenFile(locations.tokenPath, text)
+  if (Option.isNone(text)) return empty()
+  return yield* parseTokenFile(locations.tokenPath, text.value)
 })
 
 /**

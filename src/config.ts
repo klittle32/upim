@@ -1,5 +1,5 @@
 import { dirname } from "node:path"
-import { Effect, FileSystem, Schema } from "effect"
+import { Effect, FileSystem, Option, Schema } from "effect"
 import { ConfigError } from "./errors.ts"
 import { isNotFound } from "./filesystem.ts"
 import { resolveLocations, type Locations } from "./paths.ts"
@@ -32,13 +32,14 @@ const readText = (path: string) =>
 export const loadConfig = (locations: Locations) =>
   Effect.gen(function*() {
     const text = yield* readText(locations.configPath).pipe(
+      Effect.asSome,
       Effect.catch((error) => isNotFound(error)
-        ? Effect.succeed(undefined)
+        ? Effect.succeedNone
         : Effect.fail(new ConfigError({ message: `Could not read ${locations.configPath}: ${error.message}` })))
     )
-    if (text === undefined) return emptyConfig()
+    if (Option.isNone(text)) return emptyConfig()
     const parsed = yield* Effect.try({
-      try: () => JSON.parse(text) as unknown,
+      try: () => JSON.parse(text.value) as unknown,
       catch: (error) => new ConfigError({ message: `Invalid JSON in ${locations.configPath}: ${String(error)}` })
     })
     return yield* Schema.decodeUnknownEffect(ConfigSchema)(parsed).pipe(
