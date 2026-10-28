@@ -23,6 +23,7 @@ export class ApiError extends Data.TaggedError("ApiError")<{
 export class UsageError extends Data.TaggedError("UsageError")<{
   readonly message: string
   readonly path?: string
+  readonly cause?: unknown
 }> {}
 
 export class TransportError extends Data.TaggedError("TransportError")<{

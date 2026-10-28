@@ -158,11 +158,9 @@ test("invalid, duplicate, and built-in-shadowing fragments are config errors tha
   )
 })
 
-test("UPIM_EXTENSIONS parses a comma list and blank means unset", () => {
+test("UPIM_EXTENSIONS parses a comma list into unique trimmed names", () => {
   assert.deepEqual(parseExtensionList("dam, acme-sync,,dam"), ["dam", "acme-sync"])
-  assert.equal(parseExtensionList(""), undefined)
-  assert.equal(parseExtensionList("  "), undefined)
-  assert.equal(parseExtensionList(undefined), undefined)
+  assert.deepEqual(parseExtensionList(" , "), [])
 })
 
 test("endpoints, describe, and ext commands follow the profile's enabled extensions", () => {

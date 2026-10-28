@@ -73,7 +73,7 @@ upim config show
 
 `--config path/to/config.json` stores tokens beside that file unless `UPIM_TOKEN_FILE` is set. Profiles live in one document. `upim config use staging` selects one, and `--profile staging` overrides it for a single command.
 
-Environment variables override the selected profile and are not written back:
+Environment variables override the selected profile and are not written back. A variable that is unset or blank is ignored:
 
 | Variable | Purpose |
 | --- | --- |

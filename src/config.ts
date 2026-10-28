@@ -1,5 +1,5 @@
-import { dirname } from "node:path"
-import { Effect, FileSystem, Option, Schema } from "effect"
+import { Effect, FileSystem, Option, Path, Schema } from "effect"
+import { ProfileEnv, ProfileNameEnv, readEnv } from "./env.ts"
 import { ConfigError } from "./errors.ts"
 import { isNotFound } from "./filesystem.ts"
 import { resolveLocations, type Locations } from "./paths.ts"
@@ -49,12 +49,13 @@ export const loadConfig = (locations: Locations) =>
     )
   })
 
-const writePrivate = (path: string, contents: string) =>
+const writePrivate = (target: string, contents: string) =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
-    yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 })
-    yield* fs.writeFileString(path, contents, { mode: 0o600 })
-    yield* fs.chmod(path, 0o600)
+    const path = yield* Path.Path
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true, mode: 0o700 })
+    yield* fs.writeFileString(target, contents, { mode: 0o600 })
+    yield* fs.chmod(target, 0o600)
   })
 
 export const saveConfig = (locations: Locations, config: ConfigFile) =>
@@ -76,34 +77,36 @@ export const normalizeBaseUrl = (value: string): string => {
   return trimmed
 }
 
-export const profileName = (config: ConfigFile, requested: string | undefined): string =>
-  requested || process.env.UPIM_PROFILE || config.current || "default"
+/** The selected profile name: the flag, then UPIM_PROFILE, then the config's current profile, then "default". */
+export const profileName = (config: ConfigFile, requested: string | undefined) =>
+  Effect.map(readEnv(ProfileNameEnv), (fromEnv) =>
+    requested || Option.getOrUndefined(fromEnv) || config.current || "default")
 
-export const activeProfile = (config: ConfigFile, requested: string | undefined): Profile => {
-  const name = profileName(config, requested)
+export const activeProfile = Effect.fn("config.activeProfile")(function*(config: ConfigFile, requested: string | undefined) {
+  const name = yield* profileName(config, requested)
   const profile = config.profiles[name]
   if (profile === undefined) {
-    throw new ConfigError({
+    return yield* new ConfigError({
       message: `Profile "${name}" is not configured. Run \`upim config init\` or create the XDG config file.`
     })
   }
-  return applyEnv(profile)
-}
-
-/** Parse `UPIM_EXTENSIONS=dam,acme-sync`. Unset or blank means "use the profile". */
-export const parseExtensionList = (value: string | undefined): readonly string[] | undefined => {
-  if (value === undefined || value.trim() === "") return undefined
-  return [...new Set(value.split(",").map((name) => name.trim()).filter((name) => name !== ""))]
-}
-
-export const applyEnv = (profile: Profile): Profile => ({
-  baseUrl: process.env.UPIM_BASE_URL?.trim() || profile.baseUrl,
-  clientId: process.env.UPIM_CLIENT_ID?.trim() || profile.clientId,
-  clientSecret: process.env.UPIM_CLIENT_SECRET?.trim() || profile.clientSecret,
-  username: process.env.UPIM_USERNAME?.trim() || profile.username,
-  password: process.env.UPIM_PASSWORD ?? profile.password,
-  extensions: parseExtensionList(process.env.UPIM_EXTENSIONS) ?? profile.extensions
+  return yield* applyEnv(profile)
 })
+
+/** Parse `UPIM_EXTENSIONS=dam,acme-sync` into unique, trimmed names. */
+export const parseExtensionList = (value: string): readonly string[] =>
+  [...new Set(value.split(",").map((name) => name.trim()).filter((name) => name !== ""))]
+
+/** The profile with the UPIM_* environment overrides applied. Nothing here is written back. */
+export const applyEnv = (profile: Profile) =>
+  Effect.map(readEnv(ProfileEnv), (env): Profile => ({
+    baseUrl: Option.getOrElse(env.baseUrl, () => profile.baseUrl),
+    clientId: Option.getOrElse(env.clientId, () => profile.clientId),
+    clientSecret: Option.getOrElse(env.clientSecret, () => profile.clientSecret),
+    username: Option.getOrElse(env.username, () => profile.username),
+    password: Option.getOrElse(env.password, () => profile.password),
+    extensions: Option.getOrElse(Option.map(env.extensions, parseExtensionList), () => profile.extensions)
+  }))
 
 /** Names of the extensions the active profile enables, after the environment override. */
 export const enabledExtensions = (profile: Profile): readonly string[] => profile.extensions ?? []

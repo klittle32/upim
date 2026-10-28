@@ -1,9 +1,4 @@
-import { readFile } from "node:fs/promises"
-import { basename } from "node:path"
-import { readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
-import { Clock, Effect, Option, Stdio } from "effect"
+import { Clock, Effect, FileSystem, Option, Path, Schema, Stdio, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { AppError } from "./errors.ts"
 import type { HttpClientEnv, StorageEnv } from "./client.ts"
@@ -25,6 +20,7 @@ import {
   type ConfigFile,
   type Profile
 } from "./config.ts"
+import { ProfileEnv, readEnv } from "./env.ts"
 import { ConfigError, UsageError } from "./errors.ts"
 import {
   enableHint,
@@ -41,9 +37,15 @@ import { fillPath, mergeFilters, parsePair } from "./query.ts"
 import { installSkill, skillSource } from "./skill.ts"
 import { makeTokenStore, tokenIsFresh } from "./tokens.ts"
 
-const version = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")
-).version as string
+/** The version in package.json, one directory above dist/ or src/. */
+const packageVersion = Effect.gen(function*() {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
+  const text = yield* fs.readFileString(path.join(root, "package.json"))
+  const manifest = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({ version: Schema.String })))(text)
+  return manifest.version
+}).pipe(Effect.orDie)
 
 const optionalString = (name: string, description: string) =>
   Flag.String(name).pipe(Flag.optional, Flag.withDescription(description))
@@ -74,18 +76,25 @@ const optionValue = (value: Option.Option<string> | undefined) =>
 
 const strings = (value: readonly string[] | undefined) => value ?? []
 
+/** A text file, or all of stdin when the name is `-`. */
 const readText = (file: string) =>
-  Effect.tryPromise({
-    try: async () => {
-      if (file === "-") {
-        const chunks: Buffer[] = []
-        for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk))
-        return Buffer.concat(chunks).toString("utf8")
-      }
-      return await readFile(file, "utf8")
-    },
-    catch: (error) => new UsageError({ message: `Could not read ${file}: ${String(error)}` })
-  })
+  Effect.gen(function*() {
+    if (file === "-") {
+      const stdio = yield* Stdio.Stdio
+      return yield* stdio.stdin.pipe(Stream.decodeText(), Stream.mkString)
+    }
+    const fs = yield* FileSystem.FileSystem
+    return yield* fs.readFileString(file)
+  }).pipe(Effect.mapError((error) => new UsageError({ message: `Could not read ${file}: ${error.message}`, cause: error })))
+
+/** A file's bytes as a multipart File part named after the file. */
+const fileFrom = (filePath: string) =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const bytes = yield* fs.readFile(filePath)
+    return new File([new Uint8Array(bytes)], path.basename(filePath))
+  }).pipe(Effect.mapError((error) => new UsageError({ message: `Could not read ${filePath}: ${error.message}`, cause: error })))
 
 const readJsonBody = (data: string | undefined, file: string | undefined, required: boolean) =>
   Effect.gen(function*() {
@@ -118,13 +127,10 @@ const requireBaseUrl = (value: string) => Effect.try({
 
 const openSession = (flags: Globals) =>
   Effect.gen(function*() {
-    const locations = locationsFrom(optionValue(flags.config))
+    const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
-    const name = profileName(config, optionValue(flags.profile))
-    const loaded = yield* Effect.try({
-      try: () => activeProfile(config, optionValue(flags.profile)),
-      catch: (error) => error instanceof ConfigError ? error : new ConfigError({ message: String(error) })
-    })
+    const name = yield* profileName(config, optionValue(flags.profile))
+    const loaded = yield* activeProfile(config, optionValue(flags.profile))
     const override = optionValue(flags.baseUrl)
     const profile: Profile = override === undefined
       ? loaded
@@ -164,11 +170,11 @@ const runCall = (input: CallInput, extension?: ExtensionTag) =>
  */
 const enabledFor = (flags: Globals, installed: readonly InstalledExtension[]) =>
   Effect.gen(function*() {
-    const locations = locationsFrom(optionValue(flags.config))
+    const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
-    const name = profileName(config, optionValue(flags.profile))
+    const name = yield* profileName(config, optionValue(flags.profile))
     const stored = config.profiles[name]
-    const names = stored ? enabledExtensions(applyEnv(stored)) : []
+    const names = stored ? enabledExtensions(yield* applyEnv(stored)) : []
     return { name, names, ...selectEnabled(installed, names) }
   })
 
@@ -276,12 +282,7 @@ const runAction = (action: Action, flags: Record<string, any>, extension?: Exten
     let body: unknown
     let form: Record<string, string | File | undefined> | undefined
     if (action.upload) {
-      const filePath = String(flags.file)
-      const bytes = yield* Effect.tryPromise({
-        try: () => readFile(filePath),
-        catch: (error) => new UsageError({ message: `Could not read ${filePath}: ${String(error)}` })
-      })
-      form = { [action.fileField ?? "file"]: new File([bytes], basename(filePath)) }
+      form = { [action.fileField ?? "file"]: yield* fileFrom(String(flags.file)) }
       for (const spec of action.query ?? []) {
         const value = spec.kind === "boolean"
           ? undefined
@@ -350,16 +351,16 @@ const configCommand = Command.make("config").pipe(
   Command.withSubcommands([
     Command.make("path", {}, () => Effect.gen(function*() {
       const flags = yield* globals()
-      const locations = locationsFrom(optionValue(flags.config))
+      const locations = yield* locationsFrom(optionValue(flags.config))
       emit(locations, flags.json)
     })).pipe(Command.withDescription("Print the config and token file paths")),
     Command.make("show", {
       reveal: bool("reveal", "Show the client secret and password")
     }, (flags) => Effect.gen(function*() {
       const parent = yield* globals()
-      const locations = locationsFrom(optionValue(parent.config))
+      const locations = yield* locationsFrom(optionValue(parent.config))
       const config = yield* loadConfig(locations)
-      const name = profileName(config, optionValue(parent.profile))
+      const name = yield* profileName(config, optionValue(parent.profile))
       const shown: ConfigFile = flags.reveal
         ? config
         : {
@@ -378,8 +379,9 @@ const configCommand = Command.make("config").pipe(
       name: optionalString("name", "Profile name to create")
     }, (flags) => Effect.gen(function*() {
       const parent = yield* globals()
-      const locations = locationsFrom(optionValue(parent.config))
+      const locations = yield* locationsFrom(optionValue(parent.config))
       const config = yield* loadConfig(locations)
+      const env = yield* readEnv(ProfileEnv)
       const name = optionValue(flags.name) || optionValue(parent.profile) || config.current || "default"
       const interactive = !flags.nonInteractive && process.stdin.isTTY
       const take = (value: string | undefined, label: string, secret = false) =>
@@ -388,12 +390,12 @@ const configCommand = Command.make("config").pipe(
           : interactive
             ? promptOr(undefined, label, secret)
             : Effect.fail(new UsageError({ message: `${label} is required with --non-interactive` }))
-      const baseUrlInput = yield* take(optionValue(parent.baseUrl) ?? process.env.UPIM_BASE_URL, "Base URL (site root, not /api/v1/rest)")
+      const baseUrlInput = yield* take(optionValue(parent.baseUrl) ?? Option.getOrUndefined(env.baseUrl), "Base URL (site root, not /api/v1/rest)")
       const baseUrl = yield* requireBaseUrl(baseUrlInput)
-      const clientId = yield* take(optionValue(flags.clientId) ?? process.env.UPIM_CLIENT_ID, "Client ID")
-      const clientSecret = yield* take(optionValue(flags.clientSecret) ?? process.env.UPIM_CLIENT_SECRET, "Client secret", true)
-      const username = yield* take(optionValue(flags.username) ?? process.env.UPIM_USERNAME, "Username")
-      const passwordInput = optionValue(flags.password) ?? process.env.UPIM_PASSWORD
+      const clientId = yield* take(optionValue(flags.clientId) ?? Option.getOrUndefined(env.clientId), "Client ID")
+      const clientSecret = yield* take(optionValue(flags.clientSecret) ?? Option.getOrUndefined(env.clientSecret), "Client secret", true)
+      const username = yield* take(optionValue(flags.username) ?? Option.getOrUndefined(env.username), "Username")
+      const passwordInput = optionValue(flags.password) ?? Option.getOrUndefined(env.password)
       const password = passwordInput !== undefined && passwordInput !== ""
         ? passwordInput
         : interactive
@@ -419,9 +421,9 @@ const configCommand = Command.make("config").pipe(
       value: Argument.String("value").pipe(Argument.withDescription("New value"))
     }, (flags) => Effect.gen(function*() {
       const parent = yield* globals()
-      const locations = locationsFrom(optionValue(parent.config))
+      const locations = yield* locationsFrom(optionValue(parent.config))
       const config = yield* loadConfig(locations)
-      const name = profileName(config, optionValue(parent.profile))
+      const name = yield* profileName(config, optionValue(parent.profile))
       const current = config.profiles[name] ?? {
         baseUrl: "",
         clientId: "",
@@ -444,7 +446,7 @@ const configCommand = Command.make("config").pipe(
       name: Argument.String("name").pipe(Argument.withDescription("Profile to select"))
     }, (flags) => Effect.gen(function*() {
       const parent = yield* globals()
-      const locations = locationsFrom(optionValue(parent.config))
+      const locations = yield* locationsFrom(optionValue(parent.config))
       const config = yield* loadConfig(locations)
       if (config.profiles[flags.name] === undefined) {
         return yield* new ConfigError({ message: `Profile "${flags.name}" does not exist` })
@@ -592,11 +594,7 @@ const apiCommand = Command.make("api", {
   }
   for (const pair of flags.formFile) {
     const [key, filePath] = parsePair(pair, "--form-file")
-    const bytes = yield* Effect.tryPromise({
-      try: () => readFile(filePath),
-      catch: (error) => new UsageError({ message: `Could not read ${filePath}: ${String(error)}` })
-    })
-    form[key] = new File([bytes], basename(filePath))
+    form[key] = yield* fileFrom(filePath)
   }
   yield* runCall({
     method,
@@ -687,7 +685,7 @@ const skillCommand = Command.make("skill").pipe(
   Command.withSubcommands([
     Command.make("path", {}, () => Effect.gen(function*() {
       const parent = yield* globals()
-      emit({ source: skillSource() }, parent.json)
+      emit({ source: yield* skillSource }, parent.json)
     })).pipe(Command.withDescription("Print the bundled skill directory")),
     Command.make("install", {
       user: bool("user", "Install into ~/.agents/skills instead of the current project"),
@@ -770,9 +768,9 @@ const requireInstalled = (installed: readonly InstalledExtension[], name: string
 const setExtensions = (flags: Globals, installed: readonly InstalledExtension[], name: string, change: (current: readonly string[]) => readonly string[]) =>
   Effect.gen(function*() {
     yield* requireInstalled(installed, name)
-    const locations = locationsFrom(optionValue(flags.config))
+    const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
-    const profile = profileName(config, optionValue(flags.profile))
+    const profile = yield* profileName(config, optionValue(flags.profile))
     const stored = config.profiles[profile]
     if (stored === undefined) {
       return yield* new ConfigError({ message: `Profile "${profile}" is not configured. Run \`upim config init\` first.` })
@@ -865,6 +863,8 @@ const configFlagFromArgs = (args: readonly string[]) => {
 export const run = Effect.gen(function*() {
   const stdio = yield* Stdio.Stdio
   const args = yield* stdio.args
-  const installed = yield* loadExtensions(process.cwd(), locationsFrom(configFlagFromArgs(args)))
+  const locations = yield* locationsFrom(configFlagFromArgs(args))
+  const installed = yield* loadExtensions(process.cwd(), locations)
+  const version = yield* packageVersion
   return yield* Command.run(buildApp(installed), { version })
 })

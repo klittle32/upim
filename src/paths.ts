@@ -1,27 +1,31 @@
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { Effect, Option, Path } from "effect"
+import { LocationEnv, readEnv } from "./env.ts"
 
 export type Locations = {
   readonly configPath: string
   readonly tokenPath: string
 }
 
-const home = () => homedir()
+const given = (value: string | undefined) =>
+  value !== undefined && value.trim() !== "" ? Option.some(value) : Option.none<string>()
 
-/** XDG config directory, unless a config file or config home is pinned. */
-export const resolveLocations = (configFlag?: string): Locations => {
-  const explicit = configFlag || process.env.UPIM_CONFIG_FILE
-  if (explicit) {
-    const directory = dirname(explicit)
+/** XDG config directory, unless a config file or config home is pinned by a flag or the environment. */
+export const resolveLocations = Effect.fn("paths.resolveLocations")(function*(configFlag?: string) {
+  const path = yield* Path.Path
+  const env = yield* readEnv(LocationEnv)
+  const explicit = Option.orElse(given(configFlag), () => env.configFile)
+  if (Option.isSome(explicit)) {
     return {
-      configPath: explicit,
-      tokenPath: process.env.UPIM_TOKEN_FILE ?? join(directory, "tokens.json")
-    }
+      configPath: explicit.value,
+      tokenPath: Option.getOrElse(env.tokenFile, () => path.join(path.dirname(explicit.value), "tokens.json"))
+    } satisfies Locations
   }
-  const configHome = process.env.UPIM_CONFIG_HOME ?? process.env.XDG_CONFIG_HOME ?? join(home(), ".config")
-  const stateHome = process.env.UPIM_STATE_HOME ?? process.env.XDG_STATE_HOME ?? join(home(), ".local", "state")
+  const home = homedir()
+  const configHome = Option.getOrElse(Option.orElse(env.configHome, () => env.xdgConfigHome), () => path.join(home, ".config"))
+  const stateHome = Option.getOrElse(Option.orElse(env.stateHome, () => env.xdgStateHome), () => path.join(home, ".local", "state"))
   return {
-    configPath: join(configHome, "upim", "config.json"),
-    tokenPath: process.env.UPIM_TOKEN_FILE ?? join(stateHome, "upim", "tokens.json")
-  }
-}
+    configPath: path.join(configHome, "upim", "config.json"),
+    tokenPath: Option.getOrElse(env.tokenFile, () => path.join(stateHome, "upim", "tokens.json"))
+  } satisfies Locations
+})
