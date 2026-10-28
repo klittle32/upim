@@ -36,15 +36,16 @@
     "prepare": "effect-tsgo patch --typescript --no-oxlint && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "effect": "4.0.0"
+    "@effect/platform-node": "4.0.7",
+    "effect": "4.0.7"
   },
   "devDependencies": {
     "@earendil-works/chord": "1.0.0",
     "@earendil-works/pi-ai": "1.0.0",
     "@earendil-works/pi-durable": "1.0.0",
-    "@types/node": "^24.19.1",
-    "typescript": "7.0.2",
-    "@effect/tsgo": "0.47.2"
+    "@effect/tsgo": "0.63.0",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
   },
   "license": "MIT"
 }

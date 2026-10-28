@@ -4,3 +4,6 @@ dist/
 .durable/
 *.tsbuildinfo
 .DS_Store
+
+.agents/
+.letta/

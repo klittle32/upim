@@ -7,6 +7,7 @@ export class ConfigError extends Data.TaggedError("ConfigError")<{
 export class AuthError extends Data.TaggedError("AuthError")<{
   readonly message: string
   readonly details?: unknown
+  readonly cause?: unknown
 }> {}
 
 export class ApiError extends Data.TaggedError("ApiError")<{

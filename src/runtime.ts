@@ -1,9 +1,12 @@
 import { emitKeypressEvents, type Key } from "node:readline"
-import { type Cause, Effect, Layer, Option, Path, Queue, Sink, Stdio, Stream, Terminal } from "effect"
+import { NodeCrypto, NodePath } from "@effect/platform-node"
+import { type Cause, Effect, Layer, Logger, Option, Queue, Sink, Stdio, Stream, Terminal } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { UsageError } from "./errors.ts"
 import { layer as nodeFileSystem } from "./filesystem.ts"
+import { TokenLocks } from "./locks.ts"
+import { stderrLogger } from "./output.ts"
 
 const stdio = Stdio.make({
   args: Effect.succeed(process.argv.slice(2)),
@@ -75,8 +78,11 @@ const terminal = Terminal.make({
 
 export const layer = Layer.mergeAll(
   FetchHttpClient.layer,
-  Path.layer,
+  NodePath.layer,
+  NodeCrypto.layer,
   nodeFileSystem,
+  TokenLocks.layer,
+  Logger.layer([stderrLogger]),
   Layer.succeed(Stdio.Stdio, stdio),
   Layer.succeed(Terminal.Terminal, terminal),
   Layer.succeed(

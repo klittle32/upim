@@ -38,7 +38,7 @@ const failure = (error: unknown, prefix: string) =>
 export const checkBody = (action: Action, body: unknown) => {
   const contract = contractFor(action.method, action.path)
   if (contract.body === undefined || body === undefined) return Effect.void
-  return Schema.decodeUnknownEffect(contract.body.schema)(body).pipe(
+  return Schema.decodeEffect(contract.body.schema)(body).pipe(
     Effect.mapError((error) => failure(error, `Local schema check failed for ${action.method} ${action.path}.`)),
     Effect.asVoid
   )

@@ -3,15 +3,26 @@ import test from "node:test"
 import { Effect, Fiber, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
-import { call, login, resetAuthFlight, tokenFlightWaiters, type Session } from "../src/client.ts"
+import { call, login, tokenFlightWaiters, type Session } from "../src/client.ts"
+import { TokenLocks } from "../src/locks.ts"
 import { ApiError, AuthError, UsageError } from "../src/errors.ts"
 import { basicAuthorization } from "../src/oauth.ts"
-import type { TokenSet } from "../src/tokens.ts"
+import type { TokenSet, TokenStore } from "../src/tokens.ts"
 
 const execute = <A>(fetchImpl: typeof fetch, effect: Effect.Effect<A, unknown, any>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(FetchHttpClient.layer.pipe(
-    Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetchImpl))
+  Effect.runPromise(effect.pipe(Effect.provide(Layer.mergeAll(
+    FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetchImpl))),
+    TokenLocks.layer
   ))) as Effect.Effect<A>)
+
+const memoryStore = (get: () => TokenSet | undefined, set: (tokens: TokenSet | undefined) => void): TokenStore => ({
+  read: Effect.sync(get),
+  write: (tokens) => Effect.sync(() => set(tokens)),
+  exclusive: (work) => Effect.suspend(() => work({
+    stored: get(),
+    commit: (tokens) => Effect.sync(() => set(tokens))
+  }))
+})
 
 const profile = {
   baseUrl: "https://pim.example.com",
@@ -35,7 +46,6 @@ const jsonResponse = (status: number, body: unknown, headers: Record<string, str
   })
 
 test("refreshes once after 401 and retries the original request", async () => {
-  resetAuthFlight()
   const seen: string[] = []
   let saved: TokenSet | undefined = {
     accessToken: "expired",
@@ -64,7 +74,7 @@ test("refreshes once after 401 and retries the original request", async () => {
     profile,
     profileName: "default",
     tokens: saved,
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -74,8 +84,30 @@ test("refreshes once after 401 and retries the original request", async () => {
   assert.equal(seen.filter((line) => line.includes("/oauth/token")).length, 1)
 })
 
+test("uses the tokens another process stored instead of refreshing again", async () => {
+  const winner: TokenSet = {
+    accessToken: "from-the-winner",
+    refreshToken: "refresh-9",
+    tokenType: "Bearer",
+    expiresAt: Date.now() + 3_600_000
+  }
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if (String(input).endsWith("/oauth/token")) throw new Error("the loser must not refresh")
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer from-the-winner")
+    return jsonResponse(200, { data: [] })
+  }
+  const session: Session = {
+    profile,
+    profileName: "default",
+    tokens: { ...winner, accessToken: "expired", expiresAt: Date.now() - 1 },
+    store: memoryStore(() => winner, () => assert.fail("nothing should be written"))
+  }
+  const result = await execute(fetchImpl, call(session, { method: "GET", path: "/api/v1/rest/products" }))
+  assert.equal(result.status, 200)
+  assert.deepEqual(session.tokens, winner)
+})
+
 test("backs off on 429 and then returns the success body", async () => {
-  resetAuthFlight()
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
     if (String(input).endsWith("/oauth/token")) {
@@ -94,7 +126,7 @@ test("backs off on 429 and then returns the success body", async () => {
       tokenType: "Bearer",
       expiresAt: Date.now() + 3_600_000
     },
-    save: () => Effect.void
+    store: memoryStore(() => undefined, () => {})
   }
   const result = await execute(fetchImpl, call(session, { method: "GET", path: "/api/v1/rest/locales" }))
   assert.equal(result.status, 200)
@@ -110,14 +142,13 @@ const freshSession = (): Session => ({
     tokenType: "Bearer",
     expiresAt: Date.now() + 3_600_000
   },
-  save: () => Effect.void
+  store: memoryStore(() => undefined, () => {})
 })
 
 const collection = (data: readonly unknown[], next: string | null) =>
   jsonResponse(200, { data, links: { next } })
 
 test("aggregates every page when links.next is exhausted", async () => {
-  resetAuthFlight()
   const second = "https://pim.example.com/api/v1/rest/products?page=2"
   const fetchImpl: typeof fetch = async (input) => {
     const url = String(input)
@@ -139,7 +170,6 @@ test("aggregates every page when links.next is exhausted", async () => {
 })
 
 test("fails when maxPages leaves another page", async () => {
-  resetAuthFlight()
   const second = "https://pim.example.com/api/v1/rest/products?page=2"
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
@@ -167,7 +197,6 @@ test("fails when maxPages leaves another page", async () => {
 })
 
 test("fails when links.next repeats instead of reporting completion", async () => {
-  resetAuthFlight()
   const second = "https://pim.example.com/api/v1/rest/products?page=2"
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
@@ -214,7 +243,6 @@ const hold = () => {
 }
 
 test("shares one token request across overlapping calls for the same session", async () => {
-  resetAuthFlight()
   const gate = hold()
   let oauthCalls = 0
   let saved: TokenSet | undefined
@@ -229,7 +257,7 @@ test("shares one token request across overlapping calls for the same session", a
     profile,
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -240,7 +268,7 @@ test("shares one token request across overlapping calls for the same session", a
     let waiters = 0
     for (let attempt = 0; attempt < 20 && waiters < 2; attempt++) {
       yield* Effect.yieldNow
-      waiters = tokenFlightWaiters(session)
+      waiters = yield* tokenFlightWaiters(session)
     }
     gate.release()
     const tokens = yield* Effect.all([
@@ -257,7 +285,6 @@ test("shares one token request across overlapping calls for the same session", a
 })
 
 test("does not share token acquisition across sessions", async () => {
-  resetAuthFlight()
   let pending = 0
   let release: () => void = () => {}
   let fail: (error: Error) => void = () => {}
@@ -282,7 +309,7 @@ test("does not share token acquisition across sessions", async () => {
     profile: { ...profile, clientId, clientSecret, password: undefined, username: undefined },
     profileName: name,
     tokens: staleTokens(`refresh-${name}`),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved.get(name), (tokens) => {
       saved.set(name, tokens)
     })
   })
@@ -304,7 +331,6 @@ test("does not share token acquisition across sessions", async () => {
 })
 
 test("a failed token acquisition can be retried", async () => {
-  resetAuthFlight()
   let oauthCalls = 0
   let saved: TokenSet | undefined
   const fetchImpl: typeof fetch = async (input) => {
@@ -317,7 +343,7 @@ test("a failed token acquisition can be retried", async () => {
     profile: { ...profile, password: undefined, username: undefined },
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -332,7 +358,6 @@ test("a failed token acquisition can be retried", async () => {
 })
 
 test("cancelling one overlapping caller leaves the other with the shared token", async () => {
-  resetAuthFlight()
   const gate = hold()
   let oauthCalls = 0
   let saved: TokenSet | undefined
@@ -347,7 +372,7 @@ test("cancelling one overlapping caller leaves the other with the shared token",
     profile: { ...profile, password: undefined, username: undefined },
     profileName: "default",
     tokens: staleTokens("refresh-1"),
-    save: (tokens) => Effect.sync(() => {
+    store: memoryStore(() => saved, (tokens) => {
       saved = tokens
     })
   }
@@ -358,7 +383,7 @@ test("cancelling one overlapping caller leaves the other with the shared token",
     let waiters = 0
     for (let attempt = 0; attempt < 20 && waiters < 2; attempt++) {
       yield* Effect.yieldNow
-      waiters = tokenFlightWaiters(session)
+      waiters = yield* tokenFlightWaiters(session)
     }
     if (waiters < 2) gate.release()
     assert.equal(waiters, 2)
@@ -376,7 +401,6 @@ const locales = { method: "GET", path: "/api/v1/rest/locales" } as const
 const onClock = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(TestClock.layer()))
 
 test("waits for a numeric Retry-After on the test clock", { timeout: 3000 }, async () => {
-  resetAuthFlight()
   let hits = 0
   let mark: () => void = () => {}
   const started = new Promise<void>((resolve) => {
@@ -402,7 +426,6 @@ test("waits for a numeric Retry-After on the test clock", { timeout: 3000 }, asy
 })
 
 test("uses fallback backoff when Retry-After is absent", { timeout: 3000 }, async () => {
-  resetAuthFlight()
   let hits = 0
   let mark: () => void = () => {}
   const started = new Promise<void>((resolve) => {
@@ -427,7 +450,6 @@ test("uses fallback backoff when Retry-After is absent", { timeout: 3000 }, asyn
 })
 
 test("waits until an HTTP-date Retry-After on the test clock", { timeout: 3000 }, async () => {
-  resetAuthFlight()
   let hits = 0
   let mark: () => void = () => {}
   const started = new Promise<void>((resolve) => {
@@ -452,7 +474,6 @@ test("waits until an HTTP-date Retry-After on the test clock", { timeout: 3000 }
 })
 
 test("stops after the bounded number of 429 responses", async () => {
-  resetAuthFlight()
   let hits = 0
   const fetchImpl: typeof fetch = async () => {
     hits++
@@ -466,7 +487,6 @@ test("stops after the bounded number of 429 responses", async () => {
 })
 
 test("interrupting a backoff delay does not send the retry", { timeout: 3000 }, async () => {
-  resetAuthFlight()
   let hits = 0
   let mark: () => void = () => {}
   const started = new Promise<void>((resolve) => {

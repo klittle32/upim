@@ -23,5 +23,5 @@ export const TokenResponseSchema = Schema.Struct({
 
 export type TokenResponse = typeof TokenResponseSchema.Type
 
-export const expiresAtFrom = (expiresIn: number | undefined, now = Date.now()) =>
+export const expiresAtFrom = (expiresIn: number | undefined, now: number) =>
   now + (expiresIn ?? 3600) * 1000
