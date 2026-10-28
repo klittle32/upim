@@ -4,6 +4,7 @@ import { dirname } from "node:path"
 import { NodeCrypto } from "@effect/platform-node"
 import { Effect, Layer, Path } from "effect"
 import { layer as nodeFileSystem } from "../../src/filesystem.ts"
+import { TokenLocks } from "../../src/locks.ts"
 import { makeTokenStore } from "../../src/tokens.ts"
 
 const [tokenPath, profile, count] = process.argv.slice(2)
@@ -25,5 +26,5 @@ await Effect.runPromise(
       expiresAt: 1_700_000_000_000
     }),
     { discard: true }
-  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer)))
+  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer, TokenLocks.layer)))
 )

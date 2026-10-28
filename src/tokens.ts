@@ -1,7 +1,7 @@
 import { Clock, Crypto, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
 import { AuthError } from "./errors.ts"
 import { isAlreadyExists, isNotFound } from "./filesystem.ts"
-import { warn } from "./output.ts"
+import { LockSettings, TokenLocks } from "./locks.ts"
 import type { Locations } from "./paths.ts"
 
 export const TokenSetSchema = Schema.Struct({
@@ -21,19 +21,20 @@ export type TokenFile = typeof TokenFileSchema.Type
 
 const empty = (): TokenFile => ({ profiles: {} })
 
-type Services = FileSystem.FileSystem | Path.Path | Crypto.Crypto
+/** Everything token storage needs from the environment. */
+export type StorageEnv = FileSystem.FileSystem | Path.Path | Crypto.Crypto | TokenLocks
 
 /**
- * The longest prefix of `text` that parses as JSON, or undefined.
- * The token file is an object, so only prefixes ending in `}` are tried.
- * A torn file from two concurrent writers is one complete document with
- * a few bytes of the other document's tail after it.
+ * The longest prefix of `text` that parses as JSON, with where it ends, or
+ * undefined. The token file is an object, so only prefixes ending in `}` are
+ * tried. A torn file from two concurrent writers is one complete document
+ * with a few bytes of the other document's tail after it.
  */
-export const longestValidPrefix = (text: string): unknown => {
+export const longestValidPrefix = (text: string): { readonly value: unknown; readonly end: number } | undefined => {
   for (let end = text.length; end > 0; end--) {
     if (text[end - 1] !== "}") continue
     try {
-      return JSON.parse(text.slice(0, end)) as unknown
+      return { value: JSON.parse(text.slice(0, end)) as unknown, end }
     } catch {
       continue
     }
@@ -42,50 +43,46 @@ export const longestValidPrefix = (text: string): unknown => {
 }
 
 const decodeTokenFile = Schema.decodeUnknownEffect(TokenFileSchema)
+const decodeTokenText = Schema.decodeUnknownEffect(Schema.fromJsonString(TokenFileSchema))
 
 /**
  * Parse the token file leniently. Unreadable content is treated as empty so
  * that the next call falls back to the password grant and rewrites the file,
  * instead of every call failing until someone repairs it by hand.
  */
-const parseTokenFile = (path: string, text: string): Effect.Effect<TokenFile> =>
-  Effect.gen(function*() {
-    const whole = yield* Effect.try(() => JSON.parse(text) as unknown).pipe(Effect.option)
-    if (Option.isSome(whole)) {
-      const decoded = yield* decodeTokenFile(whole.value).pipe(Effect.option)
-      if (Option.isSome(decoded)) return decoded.value
-    }
-    const prefix = longestValidPrefix(text)
-    const recovered = prefix === undefined
-      ? Option.none()
-      : yield* decodeTokenFile(prefix).pipe(Effect.option)
-    if (Option.isSome(recovered)) {
-      yield* warn(`Recovered ${path} from a torn write by dropping ${text.length - JSON.stringify(prefix).length} trailing byte(s)`)
-      return recovered.value
-    }
-    yield* warn(`Ignoring unreadable token file ${path}. Tokens will be requested again.`)
-    return empty()
-  })
+const parseTokenFile = Effect.fnUntraced(function*(path: string, text: string) {
+  const whole = yield* decodeTokenText(text).pipe(Effect.option)
+  if (Option.isSome(whole)) return whole.value
+  const prefix = longestValidPrefix(text)
+  const recovered = prefix === undefined
+    ? Option.none()
+    : yield* decodeTokenFile(prefix.value).pipe(Effect.option)
+  if (Option.isSome(recovered) && prefix !== undefined) {
+    yield* Effect.logWarning(`Recovered ${path} from a torn write by dropping ${text.length - prefix.end} trailing byte(s)`)
+    return recovered.value
+  }
+  yield* Effect.logWarning(`Ignoring unreadable token file ${path}. Tokens will be requested again.`)
+  return empty()
+})
 
-export const loadTokens = (locations: Locations): Effect.Effect<TokenFile, AuthError, FileSystem.FileSystem> =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem
-    const text = yield* fs.readFileString(locations.tokenPath).pipe(
-      Effect.catch((error) => isNotFound(error)
-        ? Effect.succeed(undefined)
-        : Effect.fail(new AuthError({ message: `Could not read ${locations.tokenPath}: ${error.message}` })))
-    )
-    if (text === undefined) return empty()
-    return yield* parseTokenFile(locations.tokenPath, text)
-  })
+export const loadTokens = Effect.fn("tokens.loadTokens")(function*(locations: Locations) {
+  const fs = yield* FileSystem.FileSystem
+  const text = yield* fs.readFileString(locations.tokenPath).pipe(
+    Effect.catch((error) => isNotFound(error)
+      ? Effect.succeed(undefined)
+      : Effect.fail(new AuthError({ message: `Could not read ${locations.tokenPath}: ${error.message}`, cause: error })))
+  )
+  if (text === undefined) return empty()
+  return yield* parseTokenFile(locations.tokenPath, text)
+})
 
 /**
  * Write the whole token file atomically: a private temp file in the same
  * directory, then rename over the target. Readers see the old document or
  * the new one, never a mix of two writers.
  */
-export const saveTokens = (locations: Locations, file: TokenFile): Effect.Effect<void, AuthError, Services> =>
-  Effect.gen(function*() {
+export const saveTokens = Effect.fn("tokens.saveTokens")(
+  function*(locations: Locations, file: TokenFile) {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const target = locations.tokenPath
@@ -96,20 +93,10 @@ export const saveTokens = (locations: Locations, file: TokenFile): Effect.Effect
       yield* fs.chmod(temporary, 0o600)
       yield* fs.rename(temporary, target)
     }).pipe(Effect.onError(() => fs.remove(temporary).pipe(Effect.ignore)))
-  }).pipe(
-    Effect.mapError((error) => new AuthError({ message: `Could not write ${locations.tokenPath}: ${error.message}` }))
-  )
-
-export type LockOptions = {
-  /** A lock older than this is abandoned by a dead process and may be taken over. */
-  readonly staleMs?: number
-  /** Give up waiting for the lock after this long. */
-  readonly waitMs?: number
-  /** Base interval between lock attempts. Jitter is added. */
-  readonly pollMs?: number
-}
-
-const LOCK_DEFAULTS = { staleMs: 30_000, waitMs: 45_000, pollMs: 50 } satisfies Required<LockOptions>
+  },
+  (effect, locations) => Effect.mapError(effect, (error) =>
+    new AuthError({ message: `Could not write ${locations.tokenPath}: ${error.message}`, cause: error }))
+)
 
 class LockBusy extends Data.TaggedError("LockBusy")<{
   readonly path: string
@@ -119,7 +106,7 @@ class LockBusy extends Data.TaggedError("LockBusy")<{
 const lockPathFor = (locations: Locations) => `${locations.tokenPath}.lock`
 
 const lockFailure = (path: string) => (error: { readonly message: string }) =>
-  new AuthError({ message: `Could not lock ${path}: ${error.message}` })
+  new AuthError({ message: `Could not lock ${path}: ${error.message}`, cause: error })
 
 type Lock = {
   readonly path: string
@@ -127,124 +114,128 @@ type Lock = {
   readonly owner: string
 }
 
-const LockHolderSchema = Schema.Struct({ owner: Schema.String })
+/** What a live holder writes into the lock file. `at` is the holder's clock in epoch milliseconds. */
+const LockStampSchema = Schema.Struct({
+  pid: Schema.Number,
+  owner: Schema.String,
+  at: Schema.Number
+})
+
+const decodeLockStamp = Schema.decodeUnknownEffect(Schema.fromJsonString(LockStampSchema))
+
+const readLockStamp = (fs: FileSystem.FileSystem, lockPath: string) =>
+  fs.readFileString(lockPath).pipe(
+    Effect.flatMap(decodeLockStamp),
+    Effect.option
+  )
 
 /** One attempt to create the lock file. Fails with LockBusy while another live process holds it. */
-const tryLock = (fs: FileSystem.FileSystem, lockPath: string, owner: string, staleMs: number) =>
-  Effect.gen(function*() {
-    const holder = `${JSON.stringify({ pid: process.pid, owner, at: new Date().toISOString() })}\n`
-    const created = yield* fs.writeFileString(lockPath, holder, { flag: "wx", mode: 0o600 }).pipe(
-      Effect.as(true),
-      Effect.catch((error) => isAlreadyExists(error) ? Effect.succeed(false) : Effect.fail(lockFailure(lockPath)(error)))
+const tryLock = Effect.fnUntraced(function*(fs: FileSystem.FileSystem, lockPath: string, owner: string, staleMs: number) {
+  const now = yield* Clock.currentTimeMillis
+  const stamp = `${JSON.stringify({ pid: process.pid, owner, at: now })}\n`
+  const created = yield* fs.writeFileString(lockPath, stamp, { flag: "wx", mode: 0o600 }).pipe(
+    Effect.as(true),
+    Effect.catch((error) => isAlreadyExists(error) ? Effect.succeed(false) : Effect.fail(lockFailure(lockPath)(error)))
+  )
+  if (created) return
+  const holder = yield* readLockStamp(fs, lockPath)
+  // A stamp that does not parse is dated by the file instead.
+  const since = Option.isSome(holder)
+    ? Option.some(holder.value.at)
+    : yield* fs.stat(lockPath).pipe(
+      Effect.map((info) => Option.map(info.mtime, (date) => date.getTime())),
+      Effect.orElseSucceed(() => Option.none<number>())
     )
-    if (created) return
-    const info = yield* fs.stat(lockPath).pipe(Effect.option)
-    if (Option.isNone(info)) return yield* new LockBusy({ path: lockPath, holder: "a process that just released it" })
-    const now = yield* Clock.currentTimeMillis
-    const modified = Option.getOrElse(info.value.mtime, () => new Date(now)).getTime()
-    const current = yield* fs.readFileString(lockPath).pipe(Effect.orElseSucceed(() => "unknown"))
-    if (now - modified > staleMs) {
-      // Rename first so only one waiter wins the takeover, then drop the renamed file.
-      const abandoned = `${lockPath}.stale.${process.pid}`
-      yield* fs.rename(lockPath, abandoned).pipe(
-        Effect.andThen(fs.remove(abandoned)),
-        Effect.ignore
-      )
-    }
-    return yield* new LockBusy({ path: lockPath, holder: current.trim() })
+  if (Option.isSome(since) && now - since.value > staleMs) {
+    // Rename first so only one waiter wins the takeover, then drop the renamed file.
+    const abandoned = `${lockPath}.stale.${process.pid}`
+    yield* fs.rename(lockPath, abandoned).pipe(
+      Effect.andThen(fs.remove(abandoned)),
+      Effect.ignore
+    )
+  }
+  return yield* new LockBusy({
+    path: lockPath,
+    holder: Option.isSome(holder) ? holder.value.owner : "an unknown process"
   })
+})
 
-const acquireLock = (lockPath: string, options: Required<LockOptions>): Effect.Effect<Lock, AuthError, Services> =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    const crypto = yield* Crypto.Crypto
-    const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(lockFailure(lockPath)))
-    const owner = `${process.pid}:${nonce}`
-    yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true, mode: 0o700 }).pipe(
-      Effect.mapError(lockFailure(lockPath))
-    )
-    yield* tryLock(fs, lockPath, owner, options.staleMs).pipe(
-      Effect.retry({
-        while: (error) => error._tag === "LockBusy",
-        schedule: Schedule.spaced(`${options.pollMs} millis`).pipe(
-          Schedule.jittered,
-          Schedule.upTo({ duration: `${options.waitMs} millis` })
-        )
-      }),
-      Effect.catchTag("LockBusy", (busy) => new AuthError({
-        message: `Timed out after ${options.waitMs} ms waiting for the token lock ${busy.path} held by ${busy.holder}. Remove the file if that process is gone.`
-      }))
-    )
-    return { path: lockPath, owner }
-  })
+const acquireLock = Effect.fn("tokens.acquireLock")(function*(lockPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const crypto = yield* Crypto.Crypto
+  const settings = yield* LockSettings
+  const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(lockFailure(lockPath)))
+  const owner = `${process.pid}:${nonce}`
+  yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true, mode: 0o700 }).pipe(
+    Effect.mapError(lockFailure(lockPath))
+  )
+  yield* tryLock(fs, lockPath, owner, settings.staleMs).pipe(
+    Effect.retry({
+      while: (error) => error._tag === "LockBusy",
+      schedule: Schedule.spaced(`${settings.pollMs} millis`).pipe(
+        Schedule.jittered,
+        Schedule.upTo({ duration: `${settings.waitMs} millis` })
+      )
+    }),
+    Effect.catchTag("LockBusy", (busy) => new AuthError({
+      message: `Timed out after ${settings.waitMs} ms waiting for the token lock ${busy.path} held by ${busy.holder}. Remove the file if that process is gone.`
+    }))
+  )
+  return { path: lockPath, owner } satisfies Lock
+})
 
 /**
  * Release the lock only while it is still ours. If this process stalled past
  * the stale timeout, a waiter has taken the lock over, and deleting the file
  * now would let a third process in while the waiter is mid-refresh.
  */
-const releaseLock = (lock: Lock) =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem
-    const text = yield* fs.readFileString(lock.path).pipe(Effect.option)
-    if (Option.isNone(text)) return
-    const holder = yield* Effect.try(() => JSON.parse(text.value) as unknown).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(LockHolderSchema)),
-      Effect.option
-    )
-    if (Option.isSome(holder) && holder.value.owner !== lock.owner) {
-      yield* warn(`Leaving ${lock.path} in place: ${holder.value.owner} took it over after this process held it past the stale timeout`)
-      return
-    }
-    yield* fs.remove(lock.path)
-  }).pipe(Effect.ignore)
-
-// One permit per token file keeps fibers in this process from racing each
-// other for the file lock, which is not re-entrant.
-const permits = new Map<string, Semaphore.Semaphore>()
-
-const permitFor = (lockPath: string) => {
-  const existing = permits.get(lockPath)
-  if (existing) return existing
-  const created = Semaphore.makeUnsafe(1)
-  permits.set(lockPath, created)
-  return created
-}
+const releaseLock = Effect.fnUntraced(function*(lock: Lock) {
+  const fs = yield* FileSystem.FileSystem
+  const exists = yield* fs.exists(lock.path).pipe(Effect.orElseSucceed(() => false))
+  if (!exists) return
+  const holder = yield* readLockStamp(fs, lock.path)
+  if (Option.isSome(holder) && holder.value.owner !== lock.owner) {
+    yield* Effect.logWarning(`Leaving ${lock.path} in place: ${holder.value.owner} took it over after this process held it past the stale timeout`)
+    return
+  }
+  yield* fs.remove(lock.path).pipe(Effect.ignore)
+})
 
 /**
  * Run `work` while holding the cross-process token lock. The lock is a
  * scoped resource, so it is released on success, failure, and interrupt.
  */
-export const withTokenLock = (locations: Locations, options?: LockOptions) =>
-  <A, E, R>(work: Effect.Effect<A, E, R>): Effect.Effect<A, E | AuthError, R | Services> => {
-    const lockPath = lockPathFor(locations)
-    const settings = { ...LOCK_DEFAULTS, ...options }
-    const locked = Effect.acquireRelease(acquireLock(lockPath, settings), releaseLock).pipe(
-      Effect.andThen(work),
-      Effect.scoped
-    )
-    return Semaphore.withPermit(permitFor(lockPath))(locked)
-  }
+export const withTokenLock = (locations: Locations) =>
+  <A, E, R>(work: Effect.Effect<A, E, R>): Effect.Effect<A, E | AuthError, R | StorageEnv> =>
+    Effect.gen(function*() {
+      const lockPath = lockPathFor(locations)
+      const locks = yield* TokenLocks
+      const locked = Effect.acquireRelease(acquireLock(lockPath), releaseLock).pipe(
+        Effect.andThen(work),
+        Effect.scoped
+      )
+      return yield* Semaphore.withPermit(locks.permit(lockPath))(locked)
+    }).pipe(Effect.withSpan("tokens.withTokenLock"))
 
 /** The token file as seen while holding the lock, plus a way to replace one profile's tokens. */
 export type LockedTokens = {
   readonly stored: TokenSet | undefined
-  readonly commit: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, Services>
+  readonly commit: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, StorageEnv>
 }
 
 export type TokenStore = {
   /** The profile's saved tokens, without locking. */
-  readonly read: Effect.Effect<TokenSet | undefined, AuthError, FileSystem.FileSystem>
+  readonly read: Effect.Effect<TokenSet | undefined, AuthError, StorageEnv>
   /** Replace or delete the profile's tokens under the lock. Other profiles are preserved. */
-  readonly write: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, Services>
+  readonly write: (tokens: TokenSet | undefined) => Effect.Effect<void, AuthError, StorageEnv>
   /**
    * Take the lock, re-read the file, and run `work` with what is stored now.
    * A process that lost a refresh race finds the winner's tokens in `stored`.
    */
   readonly exclusive: <A, E, R>(
     work: (locked: LockedTokens) => Effect.Effect<A, E, R>
-  ) => Effect.Effect<A, E | AuthError, R | Services>
+  ) => Effect.Effect<A, E | AuthError, R | StorageEnv>
 }
 
 const withProfile = (file: TokenFile, profile: string, tokens: TokenSet | undefined): TokenFile => {
@@ -254,8 +245,8 @@ const withProfile = (file: TokenFile, profile: string, tokens: TokenSet | undefi
   return { profiles }
 }
 
-export const makeTokenStore = (locations: Locations, profile: string, options?: LockOptions): TokenStore => {
-  const lock = withTokenLock(locations, options)
+export const makeTokenStore = (locations: Locations, profile: string): TokenStore => {
+  const lock = withTokenLock(locations)
   const exclusive: TokenStore["exclusive"] = (work) =>
     lock(Effect.gen(function*() {
       const file = yield* loadTokens(locations)
@@ -271,5 +262,5 @@ export const makeTokenStore = (locations: Locations, profile: string, options?: 
   }
 }
 
-export const tokenIsFresh = (tokens: TokenSet, now = Date.now(), skewMs = 60_000) =>
+export const tokenIsFresh = (tokens: TokenSet, now: number, skewMs = 60_000) =>
   tokens.accessToken !== "" && tokens.expiresAt - skewMs > now

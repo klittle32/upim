@@ -3,7 +3,7 @@ import { basename } from "node:path"
 import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Effect, Option } from "effect"
+import { Clock, Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { AppError } from "./errors.ts"
 import type { HttpClientEnv, StorageEnv } from "./client.ts"
@@ -487,10 +487,11 @@ const authCommand = Command.make("auth").pipe(
         return yield* new UsageError({ message: "No refresh token or password is available" })
       }
       const tokens = yield* login(session)
+      const now = yield* Clock.currentTimeMillis
       emit({
         profile: name,
         expiresAt: new Date(tokens.expiresAt).toISOString(),
-        fresh: tokenIsFresh(tokens)
+        fresh: tokenIsFresh(tokens, now)
       }, parent.json)
     })).pipe(Command.withDescription("Refresh the access token, or fall back to the password grant")),
     Command.make("status", {
@@ -499,13 +500,14 @@ const authCommand = Command.make("auth").pipe(
       const parent = yield* globals()
       const { session, name, locations } = yield* openSession(parent)
       const tokens = session.tokens
+      const now = yield* Clock.currentTimeMillis
       emit({
         profile: name,
         baseUrl: session.profile.baseUrl,
         username: session.profile.username ?? null,
         tokenPath: locations.tokenPath,
         authenticated: Boolean(tokens),
-        fresh: tokens ? tokenIsFresh(tokens) : false,
+        fresh: tokens ? tokenIsFresh(tokens, now) : false,
         expiresAt: tokens ? new Date(tokens.expiresAt).toISOString() : null,
         ...(flags.reveal && tokens ? { accessToken: tokens.accessToken } : {})
       }, parent.json)

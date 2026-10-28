@@ -1,10 +1,11 @@
-import { Clock, type Crypto, Deferred, Effect, Fiber, type FileSystem, type Path, Schema } from "effect"
+import { Clock, Deferred, Effect, Fiber, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
+import { TokenLocks, type TokenError, type TokenFlight } from "./locks.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
 import { resolveUrl } from "./query.ts"
 import type { Profile } from "./config.ts"
-import { tokenIsFresh, type TokenSet, type TokenStore } from "./tokens.ts"
+import { tokenIsFresh, type StorageEnv, type TokenSet, type TokenStore } from "./tokens.ts"
 
 export type Session = {
   profile: Profile
@@ -13,7 +14,7 @@ export type Session = {
   readonly store: TokenStore
 }
 
-export type StorageEnv = FileSystem.FileSystem | Path.Path | Crypto.Crypto
+export type { StorageEnv }
 
 export type CallInput = {
   readonly method: string
@@ -40,16 +41,6 @@ const MAX_429 = 5
 
 export type HttpClientEnv = HttpClient.HttpClient
 
-type TokenError = AuthError | TransportError | ApiError | UsageError
-
-type TokenFlight = {
-  readonly deferred: Deferred.Deferred<TokenSet, TokenError>
-  waiters: number
-  fiber?: Fiber.Fiber<boolean, never>
-}
-
-const flights = new Map<Session, TokenFlight>()
-
 const headerValue = (headers: { readonly [key: string]: string }, name: string) => headers[name.toLowerCase()]
 
 const retryDelay = (headers: { readonly [key: string]: string }, attempt: number, now: number) => {
@@ -74,7 +65,7 @@ const parseBody = (status: number, text: string, contentType: string | undefined
   }
 }
 
-const toTokenSet = (body: unknown, previous: TokenSet | undefined, now = Date.now()): TokenSet => {
+const toTokenSet = (body: unknown, previous: TokenSet | undefined, now: number): TokenSet => {
   const decoded = Schema.decodeUnknownSync(TokenResponseSchema)(body)
   return {
     accessToken: decoded.access_token,
@@ -149,10 +140,10 @@ const tokenRequest = (session: Session, body: unknown) =>
           details: result.body
         }))
       }
-      return Effect.try({
-        try: () => toTokenSet(result.body, session.tokens),
+      return Clock.currentTimeMillis.pipe(Effect.flatMap((now) => Effect.try({
+        try: () => toTokenSet(result.body, session.tokens, now),
         catch: (error) => new AuthError({ message: `Unexpected token response: ${String(error)}`, details: result.body })
-      })
+      })))
     })
   )
 
@@ -177,11 +168,12 @@ const refreshGrant = (session: Session, refreshToken: string) =>
 
 // Runs under the cross-process token lock. Several upim processes near expiry
 // otherwise refresh at once, which both multiplies grants and tears the file.
-const acquireTokens = (session: Session, force: boolean) =>
+const acquireTokens = Effect.fn("client.acquireTokens")((session: Session, force: boolean) =>
   session.store.exclusive(({ stored, commit }) => Effect.gen(function*() {
     const attempted = session.tokens
+    const now = yield* Clock.currentTimeMillis
     const refreshedElsewhere = stored !== undefined
-      && tokenIsFresh(stored, Date.now(), SKEW_MS)
+      && tokenIsFresh(stored, now, SKEW_MS)
       && (!force || stored.accessToken !== attempted?.accessToken)
     if (refreshedElsewhere) {
       session.tokens = stored
@@ -194,9 +186,9 @@ const acquireTokens = (session: Session, force: boolean) =>
     session.tokens = tokens
     yield* commit(tokens)
     return tokens
-  }))
+  })))
 
-const releaseFlight = (session: Session, flight: TokenFlight) =>
+const releaseFlight = (flights: Map<object, TokenFlight>, session: Session, flight: TokenFlight) =>
   Effect.uninterruptible(Effect.gen(function*() {
     const stop = yield* Effect.sync(() => {
       flight.waiters--
@@ -212,9 +204,11 @@ const releaseFlight = (session: Session, flight: TokenFlight) =>
 const obtainTokens = (session: Session, force: boolean) =>
   Effect.uninterruptibleMask((restore) => Effect.gen(function*() {
     const current = session.tokens
-    if (!force && current && tokenIsFresh(current, Date.now(), SKEW_MS)) {
+    const now = yield* Clock.currentTimeMillis
+    if (!force && current && tokenIsFresh(current, now, SKEW_MS)) {
       return current
     }
+    const { flights } = yield* TokenLocks
     const slot = yield* Effect.sync(() => {
       const existing = flights.get(session)
       if (existing) {
@@ -237,7 +231,7 @@ const obtainTokens = (session: Session, force: boolean) =>
       slot.flight.fiber = yield* Effect.forkDetach(work)
     }
     return yield* restore(Deferred.await(slot.flight.deferred)).pipe(
-      Effect.onInterrupt(() => releaseFlight(session, slot.flight))
+      Effect.onInterrupt(() => releaseFlight(flights, session, slot.flight))
     )
   }))
 
@@ -360,8 +354,6 @@ export const logout = (session: Session) => {
   return session.store.write(undefined)
 }
 
-export const resetAuthFlight = () => {
-  flights.clear()
-}
-
-export const tokenFlightWaiters = (session: Session) => flights.get(session)?.waiters ?? 0
+/** How many callers are waiting on this session's in-flight token request. */
+export const tokenFlightWaiters = (session: Session) =>
+  Effect.map(TokenLocks, ({ flights }) => flights.get(session)?.waiters ?? 0)
