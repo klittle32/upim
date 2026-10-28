@@ -225,18 +225,20 @@ test("a torn token file parses from its longest valid prefix", async () => {
 test("parallel saves from many fibers never tear the file or drop a profile", async () => {
   const paths = scratch()
   const names = Array.from({ length: 40 }, (_, index) => `profile-${index}`)
-  await live(Effect.all(
-    names.map((name) => makeTokenStore(paths, name).write(tokenSet(name))),
-    { concurrency: "unbounded" }
+  await live(Effect.forEach(
+    names,
+    (name) => makeTokenStore(paths, name).write(tokenSet(name)),
+    { concurrency: "unbounded", discard: true }
   ))
   const saved = JSON.parse(readFileSync(paths.tokenPath, "utf8")) as { profiles: Record<string, TokenSet> }
   assert.deepEqual(Object.keys(saved.profiles).sort(), [...names].sort())
 
   // Many writers to one profile: the file stays valid and holds one of the writes intact.
   const values = Array.from({ length: 25 }, (_, index) => tokenSet(`same-${index}`))
-  await live(Effect.all(
-    values.map((value) => makeTokenStore(paths, "default").write(value)),
-    { concurrency: "unbounded" }
+  await live(Effect.forEach(
+    values,
+    (value) => makeTokenStore(paths, "default").write(value),
+    { concurrency: "unbounded", discard: true }
   ))
   const after = JSON.parse(readFileSync(paths.tokenPath, "utf8")) as { profiles: Record<string, TokenSet> }
   assert.ok(values.some((value) => value.accessToken === after.profiles.default?.accessToken))
@@ -250,8 +252,9 @@ test("parallel saves from separate processes serialize on the lock file", async 
   const names = Array.from({ length: 8 }, (_, index) => `process-${index}`)
   const codes = await Effect.runPromise(Effect.gen(function*() {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    return yield* Effect.all(
-      names.map((name) => spawner.exitCode(ChildProcess.make(process.execPath, [writer, paths.tokenPath, name, "5"], { stderr: "inherit" }))),
+    return yield* Effect.forEach(
+      names,
+      (name) => spawner.exitCode(ChildProcess.make(process.execPath, [writer, paths.tokenPath, name, "5"], { stderr: "inherit" })),
       { concurrency: "unbounded" }
     )
   }).pipe(Effect.provide(NodeServices.layer)))

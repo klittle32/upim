@@ -116,9 +116,9 @@ type Lock = {
 
 /** What a live holder writes into the lock file. `at` is the holder's clock in epoch milliseconds. */
 const LockStampSchema = Schema.Struct({
-  pid: Schema.Number,
+  pid: Schema.Finite,
   owner: Schema.String,
-  at: Schema.Number
+  at: Schema.Finite
 })
 
 const decodeLockStamp = Schema.decodeUnknownEffect(Schema.fromJsonString(LockStampSchema))
