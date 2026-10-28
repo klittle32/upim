@@ -81,15 +81,15 @@ const readFragments = Effect.fnUntraced(function*(directory: string) {
   const entries = yield* fs.readDirectory(directory).pipe(
     Effect.catch((error) => isNotFound(error)
       ? Effect.succeed([] as string[])
-      : Effect.fail(new ConfigError({ message: `Could not read extensions in ${directory}: ${error.message}` })))
+      : Effect.fail(new ConfigError({ message: `Could not read extensions in ${directory}: ${error.message}`, cause: error })))
   )
   const files = entries.filter((entry) => entry.endsWith(".json")).sort()
   return yield* Effect.forEach(files, (file) => {
     const source = path.join(directory, file)
     return fs.readFileString(source).pipe(
-      Effect.mapError((error) => new ConfigError({ message: `Could not read extension ${source}: ${error.message}` })),
+      Effect.mapError((error) => new ConfigError({ message: `Could not read extension ${source}: ${error.message}`, cause: error })),
       Effect.flatMap((text) => decodeExtensionText(text).pipe(
-        Effect.mapError((error) => new ConfigError({ message: `Invalid extension ${source}: ${error.message}` }))
+        Effect.mapError((error) => new ConfigError({ message: `Invalid extension ${source}: ${error.message}`, cause: error }))
       )),
       Effect.map((extension): InstalledExtension => ({ extension, source }))
     )
