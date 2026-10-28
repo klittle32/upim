@@ -113,6 +113,8 @@ upim auth logout
 
 API commands log in on their own when a saved token is missing and credentials are available.
 
+Several `upim` processes can share one token file. A refresh takes `tokens.json.lock` beside the file (exclusive create; a lock older than 30 seconds counts as abandoned; a waiter polls for up to 45 seconds), re-reads the file, and reuses a token that another process stored instead of requesting its own. The file is replaced by writing `tokens.json.<pid>.tmp` and renaming it into place, so a reader never sees a half-written document. If the file is still unreadable, `upim` prints one `{"warning": "..."}` line on stderr, treats the file as empty, and logs in again.
+
 ## Commands
 
 Start with `upim endpoints --json`. Each action includes the `describe` command that prints its fields. Failures are one JSON object on stderr, with `error`, `message`, and `path`.
