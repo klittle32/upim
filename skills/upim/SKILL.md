@@ -14,7 +14,8 @@ Use the `upim` command for UnoPim. Do not invent REST calls, flag names, or prod
 
 1. `upim endpoints --json` lists every action. Each entry has a `describe` command.
 2. `upim describe <resource> <action> --json` is the contract for that one action. Read `example.command` and run it. Do not translate flag names yourself.
-3. Success is JSON on stdout. Failure is one JSON object on stderr with `error`, `message`, and `path`, and a non-zero exit. Read stderr before retrying.
+3. Success is JSON on stdout. Failure is a non-zero exit, and the error is the last JSON line on stderr, with `error`, `message`, and `path`. Read it before retrying.
+4. stderr may also carry one-line `{"warning": "..."}` objects on success or failure, for example when a torn token file was recovered or a lock was left to another process. Warnings are informational. They are never a reason to retry.
 
 Do not load `upim schema --json`. It is the whole API and is too large.
 
@@ -23,6 +24,13 @@ Do not load `upim schema --json`. It is the whole API and is too large.
 The base URL is the site root, such as `https://pim.example.com`. Never append `/api/v1/rest` or `/oauth/token`.
 
 If a command says the profile is not configured, run `upim config init` or `upim config init --non-interactive` with `--base-url`, `--client-id`, `--client-secret`, `--username`, and `--password`. `upim` logs in and refreshes tokens itself. Do not call `/oauth/token` directly.
+
+## Environment
+
+- Environment variables override the selected profile and are never written back: `UPIM_PROFILE`, `UPIM_CONFIG_FILE`, `UPIM_CONFIG_HOME`, `UPIM_STATE_HOME`, `UPIM_TOKEN_FILE`, `UPIM_EXTENSIONS`, and the credential variables `UPIM_BASE_URL`, `UPIM_CLIENT_ID`, `UPIM_CLIENT_SECRET`, `UPIM_USERNAME`, and `UPIM_PASSWORD`. The README table is the full list.
+- A variable that is unset or blank is ignored. Blank does not mean an empty value.
+- Running many `upim` processes in parallel against one profile is safe. They share a lock on the token file, and only one of them logs in or refreshes.
+- For experiments, point `UPIM_CONFIG_HOME` and `UPIM_STATE_HOME` at a scratch directory and create a profile there. Do not edit the user's real config or token file.
 
 ## Contracts
 
