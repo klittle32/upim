@@ -1,4 +1,4 @@
-import { Clock, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
+import { Clock, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
 import { SecureRandom } from "effect/crypto"
 import { AuthError } from "./errors.ts"
 import { isAlreadyExists, isNotFound } from "./filesystem.ts"
@@ -102,10 +102,10 @@ export const saveTokens = Effect.fn("tokens.saveTokens")(
     new AuthError({ message: `Could not write ${locations.tokenPath}: ${error.message}`, cause: error }))
 )
 
-class LockBusy extends Data.TaggedError("LockBusy")<{
-  readonly path: string
-  readonly holder: string
-}> {}
+class LockBusy extends Schema.TaggedError<LockBusy, { readonly brand: unique symbol }>()("LockBusy", {
+  path: Schema.String,
+  holder: Schema.String
+}) {}
 
 const lockPathFor = (locations: Locations) => `${locations.tokenPath}.lock`
 

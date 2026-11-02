@@ -1,43 +1,39 @@
-import { Data } from "effect"
+import { Schema } from "effect"
 
-export class ConfigError extends Data.TaggedError("ConfigError")<{
-  readonly message: string
-  readonly cause?: unknown
-}> {}
+export class ConfigError extends Schema.TaggedError<ConfigError, { readonly brand: unique symbol }>()("ConfigError", {
+  message: Schema.String,
+  cause: Schema.optional(Schema.Unknown)
+}) {}
 
-export class AuthError extends Data.TaggedError("AuthError")<{
-  readonly message: string
-  readonly details?: unknown
-  readonly cause?: unknown
-}> {}
+export class AuthError extends Schema.TaggedError<AuthError, { readonly brand: unique symbol }>()("AuthError", {
+  message: Schema.String,
+  details: Schema.optional(Schema.Unknown),
+  cause: Schema.optional(Schema.Unknown)
+}) {}
 
-export class ApiError extends Data.TaggedError("ApiError")<{
-  readonly message: string
-  readonly status: number
-  readonly method: string
-  readonly url: string
-  readonly body: unknown
-  readonly path?: string
-}> {}
+export class ApiError extends Schema.TaggedError<ApiError, { readonly brand: unique symbol }>()("ApiError", {
+  message: Schema.String,
+  status: Schema.Finite,
+  method: Schema.String,
+  url: Schema.String,
+  body: Schema.Unknown,
+  /** JSON pointer to the first field UnoPim rejected, when the body says. */
+  path: Schema.optional(Schema.String)
+}) {}
 
-export class UsageError extends Data.TaggedError("UsageError")<{
-  readonly message: string
-  readonly path?: string
-  readonly cause?: unknown
-}> {}
+export class UsageError extends Schema.TaggedError<UsageError, { readonly brand: unique symbol }>()("UsageError", {
+  message: Schema.String,
+  path: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown)
+}) {}
 
-export class TransportError extends Data.TaggedError("TransportError")<{
-  readonly message: string
-}> {}
+export class TransportError extends Schema.TaggedError<TransportError, { readonly brand: unique symbol }>()("TransportError", {
+  message: Schema.String
+}) {}
 
-export type AppError = ConfigError | AuthError | ApiError | UsageError | TransportError
+/** Every error upim reports as JSON on stderr. */
+export const AppError = Schema.Union([ConfigError, AuthError, ApiError, UsageError, TransportError])
 
-export const isAppError = (value: unknown): value is AppError =>
-  typeof value === "object" &&
-  value !== null &&
-  "_tag" in value &&
-  (value._tag === "ConfigError" ||
-    value._tag === "AuthError" ||
-    value._tag === "ApiError" ||
-    value._tag === "UsageError" ||
-    value._tag === "TransportError")
+export type AppError = typeof AppError.Type
+
+export const isAppError = Schema.is(AppError)
