@@ -7,22 +7,21 @@ import { stderrLogger } from "./output.ts"
 
 const files = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)
 
-// The platform terminal, except that the wizard refuses to start without a TTY
-// instead of reading an empty stdin and exiting as if the user had quit.
+// The platform terminal, except that prompts and the wizard refuse to start
+// without a TTY instead of reading an empty stdin and exiting as if the user
+// had quit. Spreading `node` keeps this wrapper valid when Terminal grows.
 const terminal = Layer.effect(
   Terminal.Terminal,
   Effect.gen(function*() {
     const node = yield* NodeTerminal.make()
     const stdio = yield* Stdio.Stdio
     return Terminal.make({
-      columns: node.columns,
-      rows: node.rows,
-      size: node.size,
-      display: node.display,
-      readLine: node.readLine,
+      ...node,
       readInput: Effect.gen(function*() {
         if (!(yield* stdio.stdinIsTerminal)) {
-          return yield* Effect.die(new UsageError({ message: "--wizard needs an interactive terminal" }))
+          return yield* Effect.die(new UsageError({
+            message: "This command needs an interactive terminal. Pass flags or environment variables instead."
+          }))
         }
         return yield* node.readInput
       })

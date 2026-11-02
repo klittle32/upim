@@ -1,10 +1,17 @@
-import { Cause, Logger } from "effect"
+import { Cause, Effect, Logger, Stdio, Stream } from "effect"
 import { isAppError } from "./errors.ts"
 
-export const emit = (value: unknown, json: boolean) => {
-  const compact = json || !process.stdout.isTTY
-  process.stdout.write(`${JSON.stringify(value, null, compact ? undefined : 2)}\n`)
-}
+/** Write `text` to standard output through the Stdio service. A broken stdout is a defect, there is no one left to tell. */
+export const writeStdout = (text: string) =>
+  Effect.flatMap(Stdio.Stdio, (stdio) => Stream.succeed(text).pipe(Stream.run(stdio.stdout()))).pipe(Effect.orDie)
+
+/** Print a result as JSON: compact for pipes and --json, indented on a terminal. */
+export const emit = (value: unknown, json: boolean) =>
+  Effect.gen(function*() {
+    const stdio = yield* Stdio.Stdio
+    const compact = json || !(yield* stdio.stdoutIsTerminal)
+    yield* writeStdout(`${JSON.stringify(value, null, compact ? undefined : 2)}\n`)
+  })
 
 const describeCause = (cause: unknown) =>
   typeof cause === "object" && cause !== null && "message" in cause ? String(cause.message) : String(cause)
@@ -12,6 +19,7 @@ const describeCause = (cause: unknown) =>
 const failurePath = (error: object): string | null =>
   "path" in error && typeof error.path === "string" && error.path !== "" ? error.path : null
 
+/** The final error as one JSON document on stderr. Runs in teardown, after the runtime is gone, so it writes directly. */
 export const printFailure = (error: unknown) => {
   const payload = isAppError(error)
     ? {

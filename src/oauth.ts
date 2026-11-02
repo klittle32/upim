@@ -1,7 +1,8 @@
 import { Schema } from "effect"
+import { Base64 } from "effect/encoding"
 
 export const basicAuthorization = (clientId: string, clientSecret: string) =>
-  `Basic ${Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64")}`
+  `Basic ${Base64.encode(`${clientId}:${clientSecret}`)}`
 
 export const passwordGrantBody = (username: string, password: string) => ({
   username,

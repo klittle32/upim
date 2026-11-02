@@ -31,7 +31,7 @@ import {
   type Extension,
   type InstalledExtension
 } from "./extensions.ts"
-import { emit } from "./output.ts"
+import { emit, writeStdout } from "./output.ts"
 import { ask, confirm } from "./prompt.ts"
 import { fillPath, mergeFilters, parsePair, parsePairs } from "./query.ts"
 import { installSkill, skillSource } from "./skill.ts"
@@ -157,7 +157,7 @@ const runCall = (input: CallInput, extension?: ExtensionTag) =>
     const { session, name } = yield* openSession(flags)
     if (extension !== undefined) yield* requireEnabled(session.profile, name, extension)
     const result = yield* call(session, input)
-    emit(present(result, flags.meta), flags.json)
+    yield* emit(present(result, flags.meta), flags.json)
   })
 
 /**
@@ -320,6 +320,9 @@ const buildResource = (resource: Resource, prefix: readonly string[] = [], exten
   ) as CliCommand
 }
 
+/** Whether a human can answer prompts: stdin is a terminal. */
+const stdinIsTerminal = Effect.flatMap(Stdio.Stdio, (stdio) => stdio.stdinIsTerminal)
+
 const requireValue = (value: string | undefined, message: string) =>
   value && value.trim() !== ""
     ? Effect.succeed(value.trim())
@@ -329,7 +332,7 @@ const promptOr = (current: string | undefined, label: string, secret = false) =>
   current && current.trim() !== ""
     ? Effect.succeed(current.trim())
     : Effect.gen(function*() {
-      if (!process.stdin.isTTY) {
+      if (!(yield* stdinIsTerminal)) {
         return yield* new UsageError({ message: `${label} is required in non-interactive mode` })
       }
       const answer = yield* ask(label, { secret })
@@ -342,7 +345,7 @@ const configCommand = Command.make("config").pipe(
     Command.make("path", {}, () => Effect.gen(function*() {
       const flags = yield* globals()
       const locations = yield* locationsFrom(optionValue(flags.config))
-      emit(locations, flags.json)
+      yield* emit(locations, flags.json)
     })).pipe(Command.withDescription("Print the config and token file paths")),
     Command.make("show", {
       reveal: bool("reveal", "Show the client secret and password")
@@ -357,7 +360,7 @@ const configCommand = Command.make("config").pipe(
             ...config,
             profiles: Object.fromEntries(Object.entries(config.profiles).map(([key, profile]) => [key, maskProfile(profile)]))
           }
-      emit({ ...shown, selected: name, paths: locations }, parent.json)
+      yield* emit({ ...shown, selected: name, paths: locations }, parent.json)
     })).pipe(Command.withDescription("Print the configuration, masking secrets unless --reveal is set")),
     Command.make("init", {
       nonInteractive: bool("non-interactive", "Fail instead of prompting"),
@@ -373,7 +376,7 @@ const configCommand = Command.make("config").pipe(
       const config = yield* loadConfig(locations)
       const env = yield* readEnv(ProfileEnv)
       const name = optionValue(flags.name) || optionValue(parent.profile) || config.current || "default"
-      const interactive = !flags.nonInteractive && process.stdin.isTTY
+      const interactive = !flags.nonInteractive && (yield* stdinIsTerminal)
       const take = (value: string | undefined, label: string, secret = false) =>
         value && value !== ""
           ? Effect.succeed(value)
@@ -404,7 +407,7 @@ const configCommand = Command.make("config").pipe(
         profiles: { ...config.profiles, [name]: profile }
       }
       yield* saveConfig(locations, next)
-      emit({ saved: locations.configPath, profile: name, passwordSaved: Boolean(profile.password) }, parent.json)
+      yield* emit({ saved: locations.configPath, profile: name, passwordSaved: Boolean(profile.password) }, parent.json)
     })).pipe(Command.withDescription("Create or replace a profile, interactively or with flags")),
     Command.make("set", {
       key: Argument.String("key").pipe(Argument.withDescription("baseUrl, clientId, clientSecret, username, or password")),
@@ -430,7 +433,7 @@ const configCommand = Command.make("config").pipe(
         profiles: { ...config.profiles, [name]: { ...current, [key]: value } }
       }
       yield* saveConfig(locations, next)
-      emit({ profile: name, key, path: locations.configPath }, parent.json)
+      yield* emit({ profile: name, key, path: locations.configPath }, parent.json)
     })).pipe(Command.withDescription("Set one field on the selected profile")),
     Command.make("use", {
       name: Argument.String("name").pipe(Argument.withDescription("Profile to select"))
@@ -442,11 +445,11 @@ const configCommand = Command.make("config").pipe(
         return yield* new ConfigError({ message: `Profile "${flags.name}" does not exist` })
       }
       yield* saveConfig(locations, { ...config, current: flags.name })
-      emit({ current: flags.name }, parent.json)
+      yield* emit({ current: flags.name }, parent.json)
     })).pipe(Command.withDescription("Select the current profile")),
     Command.make("example", {}, () => Effect.gen(function*() {
       const flags = yield* globals()
-      emit({
+      yield* emit({
         current: "default",
         profiles: {
           default: {
@@ -475,7 +478,7 @@ const authCommand = Command.make("auth").pipe(
       const opened = yield* openSession(parent)
       const username = yield* promptOr(optionValue(flags.username) ?? opened.session.profile.username, "Username")
       const password = yield* promptOr(optionValue(flags.password) ?? opened.session.profile.password, "Password", true)
-      const savePassword = flags.savePassword || (process.stdin.isTTY && (yield* confirm("Save password in the config file?")))
+      const savePassword = flags.savePassword || ((yield* stdinIsTerminal) && (yield* confirm("Save password in the config file?")))
       if (savePassword || username !== opened.session.profile.username) {
         const next: ConfigFile = {
           ...opened.config,
@@ -499,7 +502,7 @@ const authCommand = Command.make("auth").pipe(
       }
       opened.session.profile = { ...opened.session.profile, username, password }
       const tokens = yield* login(opened.session)
-      emit({
+      yield* emit({
         profile: opened.name,
         tokenType: tokens.tokenType,
         expiresAt: new Date(tokens.expiresAt).toISOString(),
@@ -514,7 +517,7 @@ const authCommand = Command.make("auth").pipe(
       }
       const tokens = yield* login(session)
       const now = yield* Clock.currentTimeMillis
-      emit({
+      yield* emit({
         profile: name,
         expiresAt: new Date(tokens.expiresAt).toISOString(),
         fresh: tokenIsFresh(tokens, now)
@@ -527,7 +530,7 @@ const authCommand = Command.make("auth").pipe(
       const { session, name, locations } = yield* openSession(parent)
       const tokens = session.tokens
       const now = yield* Clock.currentTimeMillis
-      emit({
+      yield* emit({
         profile: name,
         baseUrl: session.profile.baseUrl,
         username: session.profile.username ?? null,
@@ -542,7 +545,7 @@ const authCommand = Command.make("auth").pipe(
       const parent = yield* globals()
       const { session, name } = yield* openSession(parent)
       yield* logout(session)
-      emit({ profile: name, loggedOut: true }, parent.json)
+      yield* emit({ profile: name, loggedOut: true }, parent.json)
     })).pipe(Command.withDescription("Delete saved tokens for the selected profile"))
   ])
 )
@@ -598,7 +601,7 @@ const endpointsCommand = (installed: readonly InstalledExtension[]) =>
   Command.make("endpoints", {}, () => Effect.gen(function*() {
     const flags = yield* globals()
     const enabled = yield* enabledFor(flags, installed)
-    emit({
+    yield* emit({
       api: "UnoPim 3.1",
       docs: "https://devdocs.unopim.com/3.1/api/",
       errors: "stderr",
@@ -653,8 +656,8 @@ const describeCommand = (installed: readonly InstalledExtension[]) => Command.ma
       ...(family ? { family, familyAttributes: familyAttributeCodes(familyBody?.body) } : {})
     })
   }
-  if (parent.json) emit(document, true)
-  else process.stdout.write(renderText(document))
+  if (parent.json) yield* emit(document, true)
+  else yield* writeStdout(renderText(document))
 })).pipe(Command.withDescription("Show fields, validation, and a copy-paste example. Add --json for the machine-readable schema."))
 
 const skillCommand = Command.make("skill").pipe(
@@ -662,7 +665,7 @@ const skillCommand = Command.make("skill").pipe(
   Command.withSubcommands([
     Command.make("path", {}, () => Effect.gen(function*() {
       const parent = yield* globals()
-      emit({ source: yield* skillSource }, parent.json)
+      yield* emit({ source: yield* skillSource }, parent.json)
     })).pipe(Command.withDescription("Print the bundled skill directory")),
     Command.make("install", {
       user: bool("user", "Install into ~/.agents/skills instead of the current project"),
@@ -671,21 +674,21 @@ const skillCommand = Command.make("skill").pipe(
     }, (flags) => Effect.gen(function*() {
       const parent = yield* globals()
       const installed = yield* installSkill({ user: flags.user, path: optionValue(flags.path), dir: optionValue(flags.dir) })
-      emit(installed, parent.json)
+      yield* emit(installed, parent.json)
     })).pipe(Command.withDescription("Copy the skill into .agents/skills/upim, or into --path"))
   ])
 )
 
 const schemaCommand = Command.make("schema", {}, () => Effect.gen(function*() {
   const parent = yield* globals()
-  emit(openApiDocument(), parent.json)
+  yield* emit(openApiDocument(), parent.json)
 })).pipe(Command.withDescription("Print the OpenAPI 3.1 contract generated from the Effect schemas"))
 
 const extCommand = (installed: readonly InstalledExtension[]) =>
   Command.make("ext", {}, () => Effect.gen(function*() {
     const flags = yield* globals()
     const enabled = yield* enabledFor(flags, installed)
-    emit({
+    yield* emit({
       profile: enabled.name,
       usage: "upim ext <extension> <resource> <action>",
       enabled: enabled.extensions.map((extension) => extension.name),
@@ -759,7 +762,7 @@ const setExtensions = (flags: Globals, installed: readonly InstalledExtension[],
       current: config.current ?? profile,
       profiles: { ...config.profiles, [profile]: { ...stored, extensions } }
     })
-    emit({ profile, extensions, path: locations.configPath }, flags.json)
+    yield* emit({ profile, extensions, path: locations.configPath }, flags.json)
   })
 
 const extensionsCommand = (installed: readonly InstalledExtension[]) =>
@@ -769,7 +772,7 @@ const extensionsCommand = (installed: readonly InstalledExtension[]) =>
       Command.make("list", {}, () => Effect.gen(function*() {
         const flags = yield* globals()
         const enabled = yield* enabledFor(flags, installed)
-        emit({
+        yield* emit({
           profile: enabled.name,
           enabled: enabled.names,
           ...(enabled.unknown.length > 0 ? { unknown: enabled.unknown } : {}),
@@ -806,7 +809,7 @@ const extensionsCommand = (installed: readonly InstalledExtension[]) =>
         const { session, name } = yield* openSession(parent)
         const chosen = installed.filter((entry) => target === undefined || entry.extension.name === target)
         const results = yield* Effect.forEach(chosen, (entry) => probeExtension(session, entry.extension))
-        emit({
+        yield* emit({
           profile: name,
           baseUrl: session.profile.baseUrl,
           note: "A probe reports whether the host serves the extension's sentinel route. It does not enable anything and is not a version check.",
