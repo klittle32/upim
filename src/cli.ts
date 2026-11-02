@@ -5,16 +5,16 @@ import type { HttpClientEnv, StorageEnv } from "./client.ts"
 import { flatten, resources, type Action, type ExtensionTag, type FlatAction, type Resource } from "./catalog.ts"
 import { describe, openApiDocument, renderText, type OperationDocument } from "./contract/document.ts"
 import { applyLiveDictionary, attributesFromBody, familyAttributeCodes } from "./contract/live.ts"
-import { checkBody, checkFilters } from "./contract/validate.ts"
+import { checkBody } from "./contract/validate.ts"
 import { call, login, logout, type CallInput, type Session } from "./client.ts"
 import {
   activeProfile,
   applyEnv,
+  decodeBaseUrl,
   enabledExtensions,
   loadConfig,
   locationsFrom,
   maskProfile,
-  normalizeBaseUrl,
   profileName,
   saveConfig,
   type ConfigFile,
@@ -33,7 +33,7 @@ import {
 } from "./extensions.ts"
 import { emit } from "./output.ts"
 import { ask, confirm } from "./prompt.ts"
-import { fillPath, mergeFilters, parsePair } from "./query.ts"
+import { fillPath, mergeFilters, parsePair, parsePairs } from "./query.ts"
 import { installSkill, skillSource } from "./skill.ts"
 import { makeTokenStore, tokenIsFresh } from "./tokens.ts"
 
@@ -120,10 +120,6 @@ type Globals = {
   readonly config: Option.Option<string>
 }
 
-const requireBaseUrl = (value: string) => Effect.try({
-  try: () => normalizeBaseUrl(value),
-  catch: (error) => new UsageError({ message: error instanceof Error ? error.message : String(error) })
-})
 
 const openSession = (flags: Globals) =>
   Effect.gen(function*() {
@@ -134,7 +130,7 @@ const openSession = (flags: Globals) =>
     const override = optionValue(flags.baseUrl)
     const profile: Profile = override === undefined
       ? loaded
-      : { ...loaded, baseUrl: yield* requireBaseUrl(override) }
+      : { ...loaded, baseUrl: yield* decodeBaseUrl(override) }
     const store = makeTokenStore(locations, name)
     const session: Session = {
       profile,
@@ -178,30 +174,28 @@ const enabledFor = (flags: Globals, installed: readonly InstalledExtension[]) =>
     return { name, names, ...selectEnabled(installed, names) }
   })
 
-const listQuery = (flags: Record<string, unknown>) => {
-  const query: Record<string, string | undefined> = {}
-  const limit = flags.limit as Option.Option<number>
-  const page = flags.page as Option.Option<number>
-  const pagination = flags.paginationType as Option.Option<string>
-  const searchAfter = flags.searchAfter as Option.Option<number>
-  const ifNoneMatch = flags.ifNoneMatch as Option.Option<string>
-  if (Option.isSome(limit)) query.limit = String(limit.value)
-  if (Option.isSome(page)) query.page = String(page.value)
-  if (Option.isSome(pagination)) query.pagination_type = pagination.value
-  if (Option.isSome(searchAfter)) query.search_after = String(searchAfter.value)
-  const filters = mergeFilters(optionValue(flags.filters as Option.Option<string>), strings(flags.filter as string[]))
-  if (Object.keys(filters).length > 0) query.filters = JSON.stringify(filters)
-  for (const pair of strings(flags.query as string[])) {
-    const [key, value] = parsePair(pair, "--query")
-    query[key] = value
-  }
-  return {
-    query,
-    headers: Option.isSome(ifNoneMatch) ? { "if-none-match": ifNoneMatch.value } : undefined,
-    followPages: Boolean(flags.all),
-    maxPages: Option.isSome(flags.maxPages as Option.Option<number>) ? (flags.maxPages as Option.Some<number>).value : undefined
-  }
-}
+const listQuery = (flags: Record<string, unknown>) =>
+  Effect.gen(function*() {
+    const query: Record<string, string | undefined> = {}
+    const limit = flags.limit as Option.Option<number>
+    const page = flags.page as Option.Option<number>
+    const pagination = flags.paginationType as Option.Option<string>
+    const searchAfter = flags.searchAfter as Option.Option<number>
+    const ifNoneMatch = flags.ifNoneMatch as Option.Option<string>
+    if (Option.isSome(limit)) query.limit = String(limit.value)
+    if (Option.isSome(page)) query.page = String(page.value)
+    if (Option.isSome(pagination)) query.pagination_type = pagination.value
+    if (Option.isSome(searchAfter)) query.search_after = String(searchAfter.value)
+    const filters = yield* mergeFilters(optionValue(flags.filters as Option.Option<string>), strings(flags.filter as string[]))
+    if (Object.keys(filters).length > 0) query.filters = JSON.stringify(filters)
+    Object.assign(query, yield* parsePairs(strings(flags.query as string[]), "--query"))
+    return {
+      query,
+      headers: Option.isSome(ifNoneMatch) ? { "if-none-match": ifNoneMatch.value } : undefined,
+      followPages: Boolean(flags.all),
+      maxPages: Option.isSome(flags.maxPages as Option.Option<number>) ? (flags.maxPages as Option.Some<number>).value : undefined
+    }
+  })
 
 const actionConfig = (action: Action) => {
   const config: Record<string, unknown> = {}
@@ -249,22 +243,19 @@ const runAction = (action: Action, flags: Record<string, any>, extension?: Exten
   Effect.gen(function*() {
     const params: Record<string, string> = {}
     for (const name of action.args ?? []) params[name] = String(flags[name])
-    const path = fillPath(action.path, params)
+    const path = yield* fillPath(action.path, params)
     const query: Record<string, string | undefined> = {}
     let headers: Record<string, string> | undefined
     let followPages = false
     let maxPages: number | undefined
     if (action.list) {
-      const listed = listQuery(flags)
+      const listed = yield* listQuery(flags)
       Object.assign(query, listed.query)
       headers = listed.headers
       followPages = listed.followPages
       maxPages = listed.maxPages
     } else {
-      for (const pair of strings(flags.query)) {
-        const [key, value] = parsePair(pair, "--query")
-        query[key] = value
-      }
+      Object.assign(query, yield* parsePairs(strings(flags.query), "--query"))
       if (Option.isSome(flags.ifNoneMatch as Option.Option<string>)) {
         headers = { "if-none-match": (flags.ifNoneMatch as Option.Some<string>).value }
       }
@@ -295,7 +286,6 @@ const runAction = (action: Action, flags: Record<string, any>, extension?: Exten
     } else if (action.body) {
       body = yield* readJsonBody(optionValue(flags.data), optionValue(flags.file), action.body === "required")
     }
-    yield* checkFilters(query.filters)
     yield* checkBody(action, body)
     yield* runCall({
       method: action.method,
@@ -391,7 +381,7 @@ const configCommand = Command.make("config").pipe(
             ? promptOr(undefined, label, secret)
             : Effect.fail(new UsageError({ message: `${label} is required with --non-interactive` }))
       const baseUrlInput = yield* take(optionValue(parent.baseUrl) ?? Option.getOrUndefined(env.baseUrl), "Base URL (site root, not /api/v1/rest)")
-      const baseUrl = yield* requireBaseUrl(baseUrlInput)
+      const baseUrl = yield* decodeBaseUrl(baseUrlInput)
       const clientId = yield* take(optionValue(flags.clientId) ?? Option.getOrUndefined(env.clientId), "Client ID")
       const clientSecret = yield* take(optionValue(flags.clientSecret) ?? Option.getOrUndefined(env.clientSecret), "Client secret", true)
       const username = yield* take(optionValue(flags.username) ?? Option.getOrUndefined(env.username), "Username")
@@ -433,7 +423,7 @@ const configCommand = Command.make("config").pipe(
       if (!["baseUrl", "clientId", "clientSecret", "username", "password"].includes(key)) {
         return yield* new UsageError({ message: `Unknown config key ${key}` })
       }
-      const value = key === "baseUrl" ? yield* requireBaseUrl(flags.value) : flags.value
+      const value = key === "baseUrl" ? yield* decodeBaseUrl(flags.value) : flags.value
       const next: ConfigFile = {
         ...config,
         current: config.current ?? name,
@@ -576,24 +566,11 @@ const apiCommand = Command.make("api", {
   if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
     return yield* new UsageError({ message: `Unsupported method ${flags.method}` })
   }
-  const query: Record<string, string> = {}
-  for (const pair of flags.query) {
-    const [key, value] = parsePair(pair, "--query")
-    query[key] = value
-  }
-  const headers: Record<string, string> = {}
-  for (const pair of flags.header) {
-    const [key, value] = parsePair(pair, "--header")
-    headers[key] = value
-  }
+  const query = yield* parsePairs(flags.query, "--query")
+  const headers = yield* parsePairs(flags.header, "--header")
   const body = yield* readJsonBody(optionValue(flags.data), optionValue(flags.file), false)
-  const form: Record<string, string | File> = {}
-  for (const pair of flags.form) {
-    const [key, value] = parsePair(pair, "--form")
-    form[key] = value
-  }
-  for (const pair of flags.formFile) {
-    const [key, filePath] = parsePair(pair, "--form-file")
+  const form: Record<string, string | File> = yield* parsePairs(flags.form, "--form")
+  for (const [key, filePath] of yield* Effect.forEach(flags.formFile, (pair) => parsePair(pair, "--form-file"))) {
     form[key] = yield* fileFrom(filePath)
   }
   yield* runCall({

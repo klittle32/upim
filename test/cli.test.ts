@@ -132,6 +132,20 @@ test("missing profile and bad base URLs are typed CLI errors", () => {
   assert.match(readFileSync(config, "utf8"), /https:\/\/pim\.example\.com/)
 })
 
+test("malformed filters, pairs, and base URLs are typed usage errors", () => {
+  for (const [args, pattern] of [
+    [["products", "list", "--filter", "bad", "--json"], /Expected key:operator:value/],
+    [["products", "list", "--filters", "{bad", "--json"], /Invalid --filters/],
+    [["api", "GET", "/x", "--query", "novalue", "--json"], /Expected key=value/],
+    [["api", "GET", "/x", "--header", "novalue", "--json"], /Invalid --header/]
+  ] as const) {
+    const result = runCli([...args])
+    assert.equal(result.status, 1, result.stderr)
+    assert.equal(failure(result).error, "UsageError", result.stderr)
+    assert.match(failure(result).message, pattern)
+  }
+})
+
 test("UPIM_TIMEOUT must be a positive number of seconds", () => {
   for (const value of ["soon", "0", "-5"]) {
     const result = runCli(["endpoints", "--json"], { UPIM_TIMEOUT: value })

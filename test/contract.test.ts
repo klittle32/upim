@@ -7,7 +7,7 @@ import { describe, openApiDocument } from "../src/contract/document.ts"
 import { applyLiveDictionary } from "../src/contract/live.ts"
 import { contractKey, contracts } from "../src/contract/operations.ts"
 import { ProductWrite } from "../src/contract/schemas.ts"
-import { checkBody, checkFilters } from "../src/contract/validate.ts"
+import { checkBody } from "../src/contract/validate.ts"
 
 const runCli = (args: string[]) =>
   spawnSync(process.execPath, ["src/main.ts", ...args], { encoding: "utf8", env: process.env })
@@ -35,11 +35,6 @@ test("decoded product schema does not drop unknown keys from the caller's body",
   const body = { sku: "shirt-1", family: "default", type: "simple", extra: { keep: true } }
   Schema.decodeSync(ProductWrite)(body)
   assert.equal(body.extra.keep, true)
-})
-
-test("filters require an operator and a value", async () => {
-  await Effect.runPromise(checkFilters(JSON.stringify({ sku: [{ operator: "IN", value: ["a"] }] })))
-  await assert.rejects(() => Effect.runPromise(checkFilters(JSON.stringify({ sku: [{ value: "a" }] }))))
 })
 
 test("describe and schema commands expose the product contract", () => {

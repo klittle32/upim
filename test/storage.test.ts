@@ -169,7 +169,7 @@ test("missing files are empty and bad JSON or permissions are typed errors", asy
   })
   await assert.rejects(
     () => run(loadConfig(paths), malformed),
-    (error: unknown) => error instanceof ConfigError && /Invalid JSON/.test(error.message)
+    (error: unknown) => error instanceof ConfigError && /Invalid config .*valid JSON/.test(error.message)
   )
 
   const unwritable = FileSystem.makeNoop({

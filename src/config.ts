@@ -1,6 +1,6 @@
 import { Effect, FileSystem, Option, Path, Schema } from "effect"
 import { ProfileEnv, ProfileNameEnv, readEnv } from "./env.ts"
-import { ConfigError } from "./errors.ts"
+import { ConfigError, UsageError } from "./errors.ts"
 import { isNotFound } from "./filesystem.ts"
 import { resolveLocations, type Locations } from "./paths.ts"
 
@@ -31,6 +31,8 @@ const readText = (path: string) =>
     return yield* fs.readFileString(path)
   })
 
+const decodeConfigText = Schema.decodeUnknownEffect(Schema.fromJsonString(ConfigSchema))
+
 export const loadConfig = (locations: Locations) =>
   Effect.gen(function*() {
     const text = yield* readText(locations.configPath).pipe(
@@ -40,12 +42,8 @@ export const loadConfig = (locations: Locations) =>
         : Effect.fail(new ConfigError({ message: `Could not read ${locations.configPath}: ${error.message}` })))
     )
     if (Option.isNone(text)) return emptyConfig()
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(text.value) as unknown,
-      catch: (error) => new ConfigError({ message: `Invalid JSON in ${locations.configPath}: ${String(error)}` })
-    })
-    return yield* Schema.decodeUnknownEffect(ConfigSchema)(parsed).pipe(
-      Effect.mapError((error) => new ConfigError({ message: `Invalid config ${locations.configPath}: ${String(error)}` }))
+    return yield* decodeConfigText(text.value).pipe(
+      Effect.mapError((error) => new ConfigError({ message: `Invalid config ${locations.configPath}: ${error.message}`, cause: error }))
     )
   })
 
@@ -63,19 +61,32 @@ export const saveConfig = (locations: Locations, config: ConfigFile) =>
     Effect.mapError((error) => new ConfigError({ message: `Could not write ${locations.configPath}: ${error.message}` }))
   )
 
-export const normalizeBaseUrl = (value: string): string => {
-  const trimmed = value.trim().replace(/\/+$/, "")
-  let url: URL
+const urlProtocol = (value: string): string | undefined => {
   try {
-    url = new URL(trimmed)
+    return new URL(value).protocol
   } catch {
-    throw new Error("baseUrl must be an absolute http or https URL")
+    return undefined
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("baseUrl must use http or https")
-  }
-  return trimmed
 }
+
+/** A site root: an absolute http or https URL. Decode `normalizeBaseUrl(input)` so trailing slashes never reach it. */
+export const BaseUrl = Schema.String.pipe(Schema.check(Schema.makeFilter((value: string) => {
+  const protocol = urlProtocol(value)
+  if (protocol === undefined) return "baseUrl must be an absolute http or https URL"
+  if (protocol !== "http:" && protocol !== "https:") return "baseUrl must use http or https"
+  return undefined
+}, { description: "an absolute http or https URL" })))
+
+/** Trim whitespace and trailing slashes so `${baseUrl}/api/...` joins cleanly. */
+export const normalizeBaseUrl = (value: string): string => value.trim().replace(/\/+$/, "")
+
+const decodeBaseUrlText = Schema.decodeUnknownEffect(BaseUrl)
+
+/** The normalized base URL, or a UsageError that says what is wrong with it. */
+export const decodeBaseUrl = (value: string) =>
+  decodeBaseUrlText(normalizeBaseUrl(value)).pipe(
+    Effect.mapError((error) => new UsageError({ message: error.message, cause: error }))
+  )
 
 /** The selected profile name: the flag, then UPIM_PROFILE, then the config's current profile, then "default". */
 export const profileName = (config: ConfigFile, requested: string | undefined) =>

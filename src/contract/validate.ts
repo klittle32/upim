@@ -2,7 +2,6 @@ import { Effect, Schema, SchemaIssue } from "effect"
 import type { Action } from "../catalog.ts"
 import { UsageError } from "../errors.ts"
 import { contractKey, contracts, validationNote } from "./operations.ts"
-import { Filters } from "./schemas.ts"
 
 const encodePointer = (key: PropertyKey) =>
   String(key).replaceAll("~", "~0").replaceAll("/", "~1")
@@ -45,12 +44,3 @@ export const checkBody = (action: Action, body: unknown) => {
   )
 }
 
-export const checkFilters = (filtersJson: string | undefined) => {
-  if (filtersJson === undefined || filtersJson === "") return Effect.void
-  return Effect.try({
-    try: () => JSON.parse(filtersJson) as unknown,
-    catch: (error) => failure(error, "Invalid filters.")
-  }).pipe(Effect.flatMap((parsed) => Schema.decodeUnknownEffect(Filters)(parsed).pipe(
-    Effect.mapError((error) => failure(error, "Invalid filters."))
-  )))
-}

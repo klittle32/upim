@@ -74,15 +74,15 @@ const parseBody = (status: number, text: string, contentType: string | undefined
   }
 }
 
-const toTokenSet = (body: unknown, previous: TokenSet | undefined, now: number): TokenSet => {
-  const decoded = Schema.decodeUnknownSync(TokenResponseSchema)(body)
-  return {
+const decodeTokenResponse = Schema.decodeUnknownEffect(TokenResponseSchema)
+
+const toTokenSet = (body: unknown, previous: TokenSet | undefined, now: number) =>
+  Effect.map(decodeTokenResponse(body), (decoded): TokenSet => ({
     accessToken: decoded.access_token,
     refreshToken: decoded.refresh_token ?? previous?.refreshToken ?? "",
     tokenType: decoded.token_type ?? "Bearer",
     expiresAt: expiresAtFrom(decoded.expires_in, now)
-  }
-}
+  }))
 
 const sendRaw = (input: {
   readonly method: string
@@ -149,10 +149,9 @@ const tokenRequest = (session: Session, body: unknown) =>
           details: result.body
         }))
       }
-      return Clock.currentTimeMillis.pipe(Effect.flatMap((now) => Effect.try({
-        try: () => toTokenSet(result.body, session.tokens, now),
-        catch: (error) => new AuthError({ message: `Unexpected token response: ${String(error)}`, details: result.body })
-      })))
+      return Clock.currentTimeMillis.pipe(Effect.flatMap((now) => toTokenSet(result.body, session.tokens, now).pipe(
+        Effect.mapError((error) => new AuthError({ message: `Unexpected token response: ${error.message}`, details: result.body }))
+      )))
     })
   )
 
