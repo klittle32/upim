@@ -23,7 +23,7 @@ import {
 } from "../src/tokens.ts"
 
 // A fresh TokenLocks per run, so tests do not share permits or flights.
-const storage = Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer, TokenLocks.layer)
+const storage = Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layerSecureRandom, TokenLocks.layer)
 
 const live = <A, E>(effect: Effect.Effect<A, E, StorageEnv>) =>
   Effect.runPromise(effect.pipe(Effect.provide(storage)))
@@ -35,7 +35,7 @@ const clocked = <A, E>(effect: Effect.Effect<A, E, StorageEnv | TestClock.TestCl
 const run = <A>(effect: Effect.Effect<A, unknown, StorageEnv>, fileSystem: FileSystem.FileSystem) =>
   Effect.runPromise(effect.pipe(
     Effect.provideService(FileSystem.FileSystem, fileSystem),
-    Effect.provide(Layer.mergeAll(Path.layer, NodeCrypto.layer, TokenLocks.layer))
+    Effect.provide(Layer.mergeAll(Path.layer, NodeCrypto.layerSecureRandom, TokenLocks.layer))
   ))
 
 /** Collects log lines instead of printing them. */

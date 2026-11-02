@@ -26,5 +26,5 @@ await Effect.runPromise(
       expiresAt: 1_700_000_000_000
     }),
     { discard: true }
-  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layer, TokenLocks.layer)))
+  ).pipe(Effect.provide(Layer.mergeAll(nodeFileSystem, Path.layer, NodeCrypto.layerSecureRandom, TokenLocks.layer)))
 )

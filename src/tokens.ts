@@ -1,4 +1,5 @@
-import { Clock, Crypto, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
+import { Clock, Data, Effect, FileSystem, Option, Path, Schedule, Schema, Semaphore } from "effect"
+import { SecureRandom } from "effect/crypto"
 import { AuthError } from "./errors.ts"
 import { isAlreadyExists, isNotFound } from "./filesystem.ts"
 import { LockSettings, TokenLocks } from "./locks.ts"
@@ -22,7 +23,7 @@ export type TokenFile = typeof TokenFileSchema.Type
 const empty = (): TokenFile => ({ profiles: {} })
 
 /** Everything token storage needs from the environment. */
-export type StorageEnv = FileSystem.FileSystem | Path.Path | Crypto.Crypto | TokenLocks
+export type StorageEnv = FileSystem.FileSystem | Path.Path | SecureRandom.SecureRandom | TokenLocks
 
 /**
  * The longest prefix of `text` that parses as JSON, with where it ends, or
@@ -164,9 +165,9 @@ const tryLock = Effect.fnUntraced(function*(fs: FileSystem.FileSystem, lockPath:
 const acquireLock = Effect.fn("tokens.acquireLock")(function*(lockPath: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const crypto = yield* Crypto.Crypto
+  const random = yield* SecureRandom.SecureRandom
   const settings = yield* LockSettings
-  const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(lockFailure(lockPath)))
+  const nonce = yield* random.uuidV4()
   const owner = `${process.pid}:${nonce}`
   yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true, mode: 0o700 }).pipe(
     Effect.mapError(lockFailure(lockPath))

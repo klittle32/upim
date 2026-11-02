@@ -14,6 +14,8 @@ const Journal = defineDoc<{ notes: JsonValue[] }>({
   kind: "dev.journal",
   version: 1,
   scope: "session",
+  // Store a full base after 20 deltas so reopening the journal does not replay every note.
+  checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 20,
   initial: () => ({ notes: [] })
 })
 

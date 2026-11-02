@@ -17,6 +17,7 @@ const terminal = Layer.effect(
     return Terminal.make({
       columns: node.columns,
       rows: node.rows,
+      size: node.size,
       display: node.display,
       readLine: node.readLine,
       readInput: Effect.gen(function*() {
@@ -32,7 +33,7 @@ const terminal = Layer.effect(
 export const layer = Layer.mergeAll(
   FetchHttpClient.layer,
   files,
-  NodeCrypto.layer,
+  NodeCrypto.layerSecureRandom,
   NodeStdio.layer,
   terminal,
   NodeChildProcessSpawner.layer.pipe(Layer.provide(files)),
