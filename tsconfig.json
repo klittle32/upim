@@ -19,5 +19,5 @@
       }
     ]
   },
-  "include": ["src", "test", "dev"]
+  "include": ["src", "test"]
 }

@@ -218,10 +218,7 @@ Covered resources: attributes and options, attribute groups, families and varian
 ```bash
 npm test
 npm run check
-npm run journal -- "note about the current milestone"
 ```
-
-`npm run journal` records development notes with `@earendil-works/pi-durable` (and Chord, pi-ai, and the built-in coding tools) in `.durable/`. Those packages are dev-only.
 
 ## Releasing
 
