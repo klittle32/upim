@@ -77,27 +77,31 @@ const optionValue = (value: Option.Option<string> | undefined) =>
 const strings = (value: readonly string[] | undefined) => value ?? []
 
 /** A text file, or all of stdin when the name is `-`. */
-const readText = (file: string) =>
-  Effect.gen(function*() {
+const readText = Effect.fnUntraced(
+  function*(file: string) {
     if (file === "-") {
       const stdio = yield* Stdio.Stdio
       return yield* stdio.stdin.pipe(Stream.decodeText(), Stream.mkString)
     }
     const fs = yield* FileSystem.FileSystem
     return yield* fs.readFileString(file)
-  }).pipe(Effect.mapError((error) => new UsageError({ message: `Could not read ${file}: ${error.message}`, cause: error })))
+  },
+  (effect, file) => Effect.mapError(effect, (error) => new UsageError({ message: `Could not read ${file}: ${error.message}`, cause: error }))
+)
 
 /** A file's bytes as a multipart File part named after the file. */
-const fileFrom = (filePath: string) =>
-  Effect.gen(function*() {
+const fileFrom = Effect.fnUntraced(
+  function*(filePath: string) {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const bytes = yield* fs.readFile(filePath)
     return new File([new Uint8Array(bytes)], path.basename(filePath))
-  }).pipe(Effect.mapError((error) => new UsageError({ message: `Could not read ${filePath}: ${error.message}`, cause: error })))
+  },
+  (effect, filePath) => Effect.mapError(effect, (error) => new UsageError({ message: `Could not read ${filePath}: ${error.message}`, cause: error }))
+)
 
-const readJsonBody = (data: string | undefined, file: string | undefined, required: boolean) =>
-  Effect.gen(function*() {
+const readJsonBody = Effect.fnUntraced(
+  function*(data: string | undefined, file: string | undefined, required: boolean) {
     if (data !== undefined && file !== undefined) {
       return yield* new UsageError({ message: "Pass only one of --data or --file" })
     }
@@ -110,7 +114,8 @@ const readJsonBody = (data: string | undefined, file: string | undefined, requir
       try: () => JSON.parse(text) as unknown,
       catch: (error) => new UsageError({ message: `Invalid JSON body: ${String(error)}` })
     })
-  })
+  }
+)
 
 type Globals = {
   readonly profile: Option.Option<string>
@@ -121,8 +126,7 @@ type Globals = {
 }
 
 
-const openSession = (flags: Globals) =>
-  Effect.gen(function*() {
+const openSession = Effect.fn("cli.openSession")(function*(flags: Globals) {
     const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
     const name = yield* profileName(config, optionValue(flags.profile))
@@ -151,8 +155,7 @@ const requireEnabled = (profile: Profile, name: string, extension: ExtensionTag)
       message: `Extension "${extension.name}" is installed but not enabled for profile "${name}". ${enableHint(extension.name)}`
     }))
 
-const runCall = (input: CallInput, extension?: ExtensionTag) =>
-  Effect.gen(function*() {
+const runCall = Effect.fn("cli.runCall")(function*(input: CallInput, extension?: ExtensionTag) {
     const flags = yield* globals()
     const { session, name } = yield* openSession(flags)
     if (extension !== undefined) yield* requireEnabled(session.profile, name, extension)
@@ -164,8 +167,7 @@ const runCall = (input: CallInput, extension?: ExtensionTag) =>
  * The extensions the selected profile enables, without requiring tokens. A
  * missing profile means core only, so `upim endpoints` works before setup.
  */
-const enabledFor = (flags: Globals, installed: readonly InstalledExtension[]) =>
-  Effect.gen(function*() {
+const enabledFor = Effect.fn("cli.enabledFor")(function*(flags: Globals, installed: readonly InstalledExtension[]) {
     const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
     const name = yield* profileName(config, optionValue(flags.profile))
@@ -174,8 +176,7 @@ const enabledFor = (flags: Globals, installed: readonly InstalledExtension[]) =>
     return { name, names, ...selectEnabled(installed, names) }
   })
 
-const listQuery = (flags: Record<string, unknown>) =>
-  Effect.gen(function*() {
+const listQuery = Effect.fnUntraced(function*(flags: Record<string, unknown>) {
     const query: Record<string, string | undefined> = {}
     const limit = flags.limit as Option.Option<number>
     const page = flags.page as Option.Option<number>
@@ -239,8 +240,7 @@ const actionConfig = (action: Action) => {
   return config
 }
 
-const runAction = (action: Action, flags: Record<string, any>, extension?: ExtensionTag) =>
-  Effect.gen(function*() {
+const runAction = Effect.fn("cli.runAction")(function*(action: Action, flags: Record<string, any>, extension?: ExtensionTag) {
     const params: Record<string, string> = {}
     for (const name of action.args ?? []) params[name] = String(flags[name])
     const path = yield* fillPath(action.path, params)
@@ -721,8 +721,7 @@ const probeHints: Readonly<Record<string, string>> = {
   unreachable: "The host could not be reached."
 }
 
-const probeExtension = (session: Session, extension: Extension) =>
-  Effect.gen(function*() {
+const probeExtension = Effect.fn("cli.probeExtension")(function*(session: Session, extension: Extension) {
     if (extension.probe === undefined) {
       return { extension: extension.name, probe: null, status: null, result: "no-probe", hint: "This extension defines no probe request." }
     }
@@ -745,8 +744,12 @@ const requireInstalled = (installed: readonly InstalledExtension[], name: string
       message: `No extension named "${name}" is installed. Installed: ${installed.map((entry) => entry.extension.name).join(", ")}. Custom fragments load from .upim/extensions/*.json in the project and from the user config directory.`
     }))
 
-const setExtensions = (flags: Globals, installed: readonly InstalledExtension[], name: string, change: (current: readonly string[]) => readonly string[]) =>
-  Effect.gen(function*() {
+const setExtensions = Effect.fn("cli.setExtensions")(function*(
+  flags: Globals,
+  installed: readonly InstalledExtension[],
+  name: string,
+  change: (current: readonly string[]) => readonly string[]
+) {
     yield* requireInstalled(installed, name)
     const locations = yield* locationsFrom(optionValue(flags.config))
     const config = yield* loadConfig(locations)
@@ -808,7 +811,7 @@ const extensionsCommand = (installed: readonly InstalledExtension[]) =>
         if (target !== undefined) yield* requireInstalled(installed, target)
         const { session, name } = yield* openSession(parent)
         const chosen = installed.filter((entry) => target === undefined || entry.extension.name === target)
-        const results = yield* Effect.forEach(chosen, (entry) => probeExtension(session, entry.extension))
+        const results = yield* Effect.forEach(chosen, (entry) => probeExtension(session, entry.extension), { concurrency: 4 })
         yield* emit({
           profile: name,
           baseUrl: session.profile.baseUrl,

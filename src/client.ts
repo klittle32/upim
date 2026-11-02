@@ -1,4 +1,4 @@
-import { Cause, Clock, Deferred, Effect, Fiber, Schema } from "effect"
+import { Cause, Clock, Deferred, Effect, Fiber, Predicate, Schema } from "effect"
 import { HttpClient, type HttpClientError, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { TokenLocks, type TokenError, type TokenFlight } from "./locks.ts"
@@ -274,13 +274,9 @@ const pointerFromErrors = (value: unknown, prefix: string[] = []): string | null
 }
 
 const asApiError = (input: CallInput, result: CallResult) => {
-  const errors = typeof result.body === "object" && result.body !== null && "errors" in result.body
-    ? (result.body as { errors?: unknown }).errors
-    : undefined
+  const errors = Predicate.hasProperty(result.body, "errors") ? result.body.errors : undefined
   return new ApiError({
-    message: typeof result.body === "object" && result.body !== null && "message" in result.body
-      ? String((result.body as { message?: unknown }).message)
-      : `HTTP ${result.status}`,
+    message: Predicate.hasProperty(result.body, "message") ? String(result.body.message) : `HTTP ${result.status}`,
     status: result.status,
     method: input.method.toUpperCase(),
     url: result.url,
@@ -295,9 +291,9 @@ const interpret = (input: CallInput, result: CallResult) => {
 }
 
 const linkNext = (body: unknown): string | undefined => {
-  if (typeof body !== "object" || body === null || !("links" in body)) return undefined
-  const next = (body as { links?: { next?: unknown } }).links?.next
-  return typeof next === "string" && next !== "" ? next : undefined
+  if (!Predicate.hasProperty(body, "links") || !Predicate.hasProperty(body.links, "next")) return undefined
+  const next = body.links.next
+  return Predicate.isString(next) && next !== "" ? next : undefined
 }
 
 const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: CallResult) =>
@@ -310,9 +306,7 @@ const pageAll = (session: Session, input: CallInput, tokens: TokenSet, first: Ca
     while (true) {
       count++
       if (page.notModified) break
-      const data = typeof page.body === "object" && page.body !== null && "data" in page.body
-        ? (page.body as { data?: unknown }).data
-        : undefined
+      const data = Predicate.hasProperty(page.body, "data") ? page.body.data : undefined
       if (!Array.isArray(data)) return first
       items.push(...data)
       const next = linkNext(page.body)

@@ -1,3 +1,4 @@
+import { Predicate } from "effect"
 import type { OperationDocument } from "./document.ts"
 
 export type LiveAttribute = {
@@ -10,7 +11,7 @@ export type LiveAttribute = {
 }
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  Predicate.isObject(value) ? value : undefined
 
 const rows = (body: unknown): readonly unknown[] => {
   const object = record(body)

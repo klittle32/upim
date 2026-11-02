@@ -25,17 +25,11 @@ export type ConfigFile = typeof ConfigSchema.Type
 
 export const emptyConfig = (): ConfigFile => ({ current: "default", profiles: {} })
 
-const readText = (path: string) =>
-  Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem
-    return yield* fs.readFileString(path)
-  })
-
 const decodeConfigText = Schema.decodeUnknownEffect(Schema.fromJsonString(ConfigSchema))
 
-export const loadConfig = (locations: Locations) =>
-  Effect.gen(function*() {
-    const text = yield* readText(locations.configPath).pipe(
+export const loadConfig = Effect.fn("config.loadConfig")(function*(locations: Locations) {
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(locations.configPath).pipe(
       Effect.asSome,
       Effect.catch((error) => isNotFound(error)
         ? Effect.succeedNone
@@ -47,8 +41,7 @@ export const loadConfig = (locations: Locations) =>
     )
   })
 
-const writePrivate = (target: string, contents: string) =>
-  Effect.gen(function*() {
+const writePrivate = Effect.fnUntraced(function*(target: string, contents: string) {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     yield* fs.makeDirectory(path.dirname(target), { recursive: true, mode: 0o700 })

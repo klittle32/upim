@@ -6,8 +6,7 @@ export const writeStdout = (text: string) =>
   Effect.flatMap(Stdio.Stdio, (stdio) => Stream.succeed(text).pipe(Stream.run(stdio.stdout()))).pipe(Effect.orDie)
 
 /** Print a result as JSON: compact for pipes and --json, indented on a terminal. */
-export const emit = (value: unknown, json: boolean) =>
-  Effect.gen(function*() {
+export const emit = Effect.fnUntraced(function*(value: unknown, json: boolean) {
     const stdio = yield* Stdio.Stdio
     const compact = json || !(yield* stdio.stdoutIsTerminal)
     yield* writeStdout(`${JSON.stringify(value, null, compact ? undefined : 2)}\n`)
