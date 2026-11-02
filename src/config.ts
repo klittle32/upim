@@ -85,7 +85,7 @@ const decodeBaseUrlText = Schema.decodeUnknownEffect(BaseUrl)
 /** The normalized base URL, or a UsageError that says what is wrong with it. */
 export const decodeBaseUrl = (value: string) =>
   decodeBaseUrlText(normalizeBaseUrl(value)).pipe(
-    Effect.mapError((error) => new UsageError({ message: error.message, cause: error }))
+    Effect.mapError((error) => new UsageError({ message: error.message }))
   )
 
 /** The selected profile name: the flag, then UPIM_PROFILE, then the config's current profile, then "default". */

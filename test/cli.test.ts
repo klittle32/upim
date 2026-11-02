@@ -225,3 +225,44 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 5)
   assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /Wizard cancelled/)
 })
+
+test("SIGINT interrupts the fiber so the token lock is released", async () => {
+  const { createServer } = await import("node:net")
+  const { spawn } = await import("node:child_process")
+  const { existsSync } = await import("node:fs")
+  const directory = mkdtempSync(join(tmpdir(), "upim-"))
+  const config = join(directory, "config.json")
+  const tokenFile = join(directory, "tokens.json")
+  const init = runCli([
+    "--config", config, "config", "init", "--non-interactive",
+    "--base-url", "https://placeholder.example.com", "--client-id", "id", "--client-secret", "secret",
+    "--username", "robot", "--password", "pw", "--save-password"
+  ], { UPIM_PROFILE: "", UPIM_BASE_URL: "" })
+  assert.equal(init.status, 0, init.stderr)
+
+  // A server that accepts the token request and never answers, so the CLI hangs while holding the lock.
+  const connected = Promise.withResolvers<void>()
+  const server = createServer(() => connected.resolve())
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const child = spawn(process.execPath, ["src/main.ts", "--config", config, "products", "list", "--json"], {
+    env: { ...process.env, UPIM_PROFILE: "", UPIM_BASE_URL: `http://127.0.0.1:${address.port}`, UPIM_TOKEN_FILE: tokenFile },
+    stdio: ["ignore", "pipe", "pipe"]
+  })
+  let stderr = ""
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk)
+  })
+  const exited = new Promise<number | null>((resolve) => child.on("exit", (code, signal) => resolve(signal === null ? code : -1)))
+  try {
+    await Promise.race([connected.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("no connection")), 8000))])
+    assert.equal(existsSync(`${tokenFile}.lock`), true, "the lock should be held while the token request hangs")
+    child.kill("SIGINT")
+    assert.equal(await exited, 130, stderr)
+    assert.equal(existsSync(`${tokenFile}.lock`), false, "the lock file should be removed on interrupt")
+  } finally {
+    child.kill("SIGKILL")
+    server.close()
+  }
+})
