@@ -5,7 +5,8 @@ import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 import { call, login, tokenFlightWaiters, type Session } from "../src/client.ts"
 import { TokenLocks } from "../src/locks.ts"
-import { ApiError, AuthError, UsageError } from "../src/errors.ts"
+import { ApiError, AuthError, TransportError, UsageError } from "../src/errors.ts"
+import { withRequestTimeout } from "../src/http.ts"
 import { basicAuthorization } from "../src/oauth.ts"
 import type { TokenSet, TokenStore } from "../src/tokens.ts"
 
@@ -505,4 +506,32 @@ test("interrupting a backoff delay does not send the retry", { timeout: 3000 }, 
     yield* TestClock.adjust("30 seconds")
   })))
   assert.equal(hits, 1)
+})
+
+test("a request with no response headers fails after the timeout with a typed hint", async () => {
+  let aborted = false
+  const hanging: typeof fetch = (_input, init) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true
+        reject(new DOMException("aborted", "AbortError"))
+      })
+    })
+  const session: Session = {
+    profile,
+    profileName: "default",
+    tokens: { accessToken: "ok", refreshToken: "r", tokenType: "Bearer", expiresAt: Date.now() + 3_600_000 },
+    store: memoryStore(() => session.tokens, () => assert.fail("nothing should be written"))
+  }
+  const timed = withRequestTimeout("50 millis").pipe(
+    Layer.provide(FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, hanging))))
+  )
+  const attempt: Effect.Effect<unknown, unknown, any> = call(session, { method: "GET", path: "/api/v1/rest/products" })
+  const error = await Effect.runPromise(
+    attempt.pipe(Effect.flip, Effect.provide(Layer.mergeAll(timed, TokenLocks.layer))) as Effect.Effect<unknown>
+  )
+  assert.ok(error instanceof TransportError, String(error))
+  assert.match(error.message, /timed out after 50ms \(GET https:\/\/pim\.example\.com\/api\/v1\/rest\/products\)/)
+  assert.match(error.message, /UPIM_TIMEOUT/)
+  assert.equal(aborted, true, "the fetch should be aborted when the timeout fires")
 })

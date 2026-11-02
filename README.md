@@ -88,6 +88,7 @@ Environment variables override the selected profile and are not written back. A 
 | `UPIM_CONFIG_HOME` | Directory that contains `config.json` |
 | `UPIM_STATE_HOME` | Directory that contains `tokens.json` |
 | `UPIM_TOKEN_FILE` | Exact token file path |
+| `UPIM_TIMEOUT` | Seconds to wait for a response before a request fails with a `TransportError`. Default `60` |
 
 ## Authentication
 

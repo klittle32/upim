@@ -40,3 +40,6 @@ export const LocationEnv = Effect.all({
 /** Read configuration through the ConfigProvider, turning a provider failure into upim's ConfigError. */
 export const readEnv = <A>(config: Effect.Effect<A, Config.ConfigError>) =>
   Effect.mapError(config, (error) => new ConfigError({ message: `Could not read the environment: ${String(error)}`, cause: error }))
+
+/** Seconds to wait for response headers before a request fails. Unset means the default. */
+export const RequestTimeoutEnv = text("UPIM_TIMEOUT")

@@ -94,7 +94,9 @@ export const saveTokens = Effect.fn("tokens.saveTokens")(
       yield* fs.writeFileString(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 })
       yield* fs.chmod(temporary, 0o600)
       yield* fs.rename(temporary, target)
-    }).pipe(Effect.onError(() => fs.remove(temporary).pipe(Effect.ignore)))
+    }).pipe(Effect.onError(() => fs.remove(temporary).pipe(
+      Effect.ignore({ log: "Debug", message: `Leaving the temporary token file ${temporary} behind` })
+    )))
   },
   (effect, locations) => Effect.mapError(effect, (error) =>
     new AuthError({ message: `Could not write ${locations.tokenPath}: ${error.message}`, cause: error }))
@@ -153,7 +155,7 @@ const tryLock = Effect.fnUntraced(function*(fs: FileSystem.FileSystem, lockPath:
     const abandoned = `${lockPath}.stale.${process.pid}`
     yield* fs.rename(lockPath, abandoned).pipe(
       Effect.andThen(fs.remove(abandoned)),
-      Effect.ignore
+      Effect.ignore({ log: "Debug", message: `Another waiter took over the stale lock ${lockPath} first` })
     )
   }
   return yield* new LockBusy({
@@ -194,6 +196,7 @@ const acquireLock = Effect.fn("tokens.acquireLock")(function*(lockPath: string) 
  */
 const releaseLock = Effect.fnUntraced(function*(lock: Lock) {
   const fs = yield* FileSystem.FileSystem
+  const settings = yield* LockSettings
   const exists = yield* fs.exists(lock.path).pipe(Effect.orElseSucceed(() => false))
   if (!exists) return
   const holder = yield* readLockStamp(fs, lock.path)
@@ -201,7 +204,10 @@ const releaseLock = Effect.fnUntraced(function*(lock: Lock) {
     yield* Effect.logWarning(`Leaving ${lock.path} in place: ${holder.value.owner} took it over after this process held it past the stale timeout`)
     return
   }
-  yield* fs.remove(lock.path).pipe(Effect.ignore)
+  yield* fs.remove(lock.path).pipe(Effect.ignore({
+    log: "Warn",
+    message: `Could not remove the token lock ${lock.path}. The next process waits up to ${settings.staleMs} ms before taking it over.`
+  }))
 })
 
 /**

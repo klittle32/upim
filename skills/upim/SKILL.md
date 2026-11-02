@@ -27,7 +27,7 @@ If a command says the profile is not configured, run `upim config init` or `upim
 
 ## Environment
 
-- Environment variables override the selected profile and are never written back: `UPIM_PROFILE`, `UPIM_CONFIG_FILE`, `UPIM_CONFIG_HOME`, `UPIM_STATE_HOME`, `UPIM_TOKEN_FILE`, `UPIM_EXTENSIONS`, and the credential variables `UPIM_BASE_URL`, `UPIM_CLIENT_ID`, `UPIM_CLIENT_SECRET`, `UPIM_USERNAME`, and `UPIM_PASSWORD`. The README table is the full list.
+- Environment variables override the selected profile and are never written back: `UPIM_PROFILE`, `UPIM_CONFIG_FILE`, `UPIM_CONFIG_HOME`, `UPIM_STATE_HOME`, `UPIM_TOKEN_FILE`, `UPIM_EXTENSIONS`, `UPIM_TIMEOUT` (seconds to wait for a response, default 60), and the credential variables `UPIM_BASE_URL`, `UPIM_CLIENT_ID`, `UPIM_CLIENT_SECRET`, `UPIM_USERNAME`, and `UPIM_PASSWORD`. The README table is the full list.
 - A variable that is unset or blank is ignored. Blank does not mean an empty value.
 - Running many `upim` processes in parallel against one profile is safe. They share a lock on the token file, and only one of them logs in or refreshes.
 - For experiments, point `UPIM_CONFIG_HOME` and `UPIM_STATE_HOME` at a scratch directory and create a profile there. Do not edit the user's real config or token file.

@@ -11,6 +11,7 @@ import { emptyConfig, loadConfig, saveConfig, type ConfigFile } from "../src/con
 import { AuthError, ConfigError } from "../src/errors.ts"
 import { layer as nodeFileSystem } from "../src/filesystem.ts"
 import { LockSettings, TokenLocks } from "../src/locks.ts"
+import { logLine } from "../src/output.ts"
 import type { Locations } from "../src/paths.ts"
 import {
   loadTokens,
@@ -42,8 +43,8 @@ const run = <A>(effect: Effect.Effect<A, unknown, StorageEnv>, fileSystem: FileS
 const captureLogs = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function*() {
     const warnings: string[] = []
-    const collector = Logger.make<unknown, void>(({ message }) => {
-      warnings.push(Array.isArray(message) ? message.map(String).join(" ") : String(message))
+    const collector = Logger.make<unknown, void>(({ cause, message }) => {
+      warnings.push(logLine(message, cause))
     })
     const value = yield* effect.pipe(Effect.provide(Logger.layer([collector])))
     return { value, warnings }
@@ -368,6 +369,19 @@ test("release leaves a lock that another process took over after a stale timeout
     yield* fs.writeFileString(lock, "garbage")
   })))
   assert.equal(existsSync(lock), false)
+})
+
+test("a lock that cannot be removed is reported, not swallowed", async () => {
+  const paths = scratch()
+  const lock = `${paths.tokenPath}.lock`
+  const noRemove = Effect.map(FileSystem.FileSystem, (real) => ({ ...real, remove: () => Effect.fail(denied("remove")) }))
+  const { warnings } = await live(captureLogs(withTokenLock(paths)(Effect.void).pipe(
+    Effect.provideServiceEffect(FileSystem.FileSystem, noRemove)
+  )))
+  assert.equal(existsSync(lock), true)
+  assert.equal(warnings.length, 1)
+  assert.ok(warnings[0].startsWith(`Could not remove the token lock ${lock}. The next process waits up to 30000 ms`), warnings[0])
+  assert.match(warnings[0], /PermissionDenied: FileSystem\.remove$/)
 })
 
 test("an interrupted config write can be retried", async () => {

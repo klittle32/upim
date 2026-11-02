@@ -1,4 +1,4 @@
-import { Logger } from "effect"
+import { Cause, Logger } from "effect"
 import { isAppError } from "./errors.ts"
 
 export const emit = (value: unknown, json: boolean) => {
@@ -32,13 +32,19 @@ export const printFailure = (error: unknown) => {
 const logText = (message: unknown) =>
   Array.isArray(message) ? message.map((part) => typeof part === "string" ? part : JSON.stringify(part)).join(" ") : String(message)
 
+/** One log entry as text: the message, then the failure it reports when the entry carries one. */
+export const logLine = (message: unknown, cause: Cause.Cause<unknown>) => {
+  const text = logText(message)
+  return cause.reasons.length === 0 ? text : `${text} ${describeCause(Cause.squash(cause))}`
+}
+
 /**
  * One JSON line per log entry on stderr, so a caller that reads the last
  * stderr line as JSON on failure still gets a document. Warnings keep the
  * `{"warning": ...}` shape that callers already know.
  */
-export const stderrLogger = Logger.make<unknown, void>(({ logLevel, message }) => {
-  const text = logText(message)
+export const stderrLogger = Logger.make<unknown, void>(({ cause, logLevel, message }) => {
+  const text = logLine(message, cause)
   const payload = logLevel === "Warn" ? { warning: text } : { level: logLevel, message: text }
   process.stderr.write(`${JSON.stringify(payload)}\n`)
 })

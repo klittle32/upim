@@ -1,7 +1,7 @@
 import { NodeChildProcessSpawner, NodeCrypto, NodeFileSystem, NodePath, NodeStdio, NodeTerminal } from "@effect/platform-node"
 import { Effect, Layer, Logger, Stdio, Terminal } from "effect"
-import { FetchHttpClient } from "effect/http"
 import { UsageError } from "./errors.ts"
+import * as Http from "./http.ts"
 import { TokenLocks } from "./locks.ts"
 import { stderrLogger } from "./output.ts"
 
@@ -31,7 +31,7 @@ const terminal = Layer.effect(
 ).pipe(Layer.provide(NodeStdio.layer))
 
 export const layer = Layer.mergeAll(
-  FetchHttpClient.layer,
+  Http.layer,
   files,
   NodeCrypto.layerSecureRandom,
   NodeStdio.layer,

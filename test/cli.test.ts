@@ -132,6 +132,17 @@ test("missing profile and bad base URLs are typed CLI errors", () => {
   assert.match(readFileSync(config, "utf8"), /https:\/\/pim\.example\.com/)
 })
 
+test("UPIM_TIMEOUT must be a positive number of seconds", () => {
+  for (const value of ["soon", "0", "-5"]) {
+    const result = runCli(["endpoints", "--json"], { UPIM_TIMEOUT: value })
+    assert.equal(result.status, 1, result.stderr)
+    assert.equal(failure(result).error, "ConfigError")
+    assert.match(failure(result).message, /UPIM_TIMEOUT must be a positive number of seconds/)
+  }
+  const blank = runCli(["endpoints", "--json"], { UPIM_TIMEOUT: " " })
+  assert.equal(blank.status, 0, blank.stderr)
+})
+
 test("--wizard without a terminal explains why", () => {
   const result = runCli(["--wizard"])
   assert.equal(result.status, 1, result.stderr)

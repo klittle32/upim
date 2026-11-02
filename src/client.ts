@@ -1,5 +1,5 @@
-import { Clock, Deferred, Effect, Fiber, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/http"
+import { Cause, Clock, Deferred, Effect, Fiber, Schema } from "effect"
+import { HttpClient, type HttpClientError, HttpClientRequest } from "effect/http"
 import { ApiError, AuthError, TransportError, UsageError, type AppError } from "./errors.ts"
 import { TokenLocks, type TokenError, type TokenFlight } from "./locks.ts"
 import { basicAuthorization, expiresAtFrom, passwordGrantBody, refreshGrantBody, TokenResponseSchema } from "./oauth.ts"
@@ -54,6 +54,15 @@ const retryDelay = (headers: { readonly [key: string]: string }, attempt: number
   return Math.min(30_000, 2 ** attempt * 1000)
 }
 
+/** A request the HttpClient gave up on because no response headers arrived in time. */
+const timedOut = (error: HttpClientError.HttpClientError) =>
+  error.reason._tag === "TransportError" && Cause.isTimeoutError(error.reason.cause)
+
+const describeTransport = (error: HttpClientError.HttpClientError) =>
+  timedOut(error)
+    ? `Request failed: ${error.message}. Set UPIM_TIMEOUT to a larger number of seconds for slow requests.`
+    : `Request failed: ${String(error)}`
+
 const parseBody = (status: number, text: string, contentType: string | undefined): unknown => {
   if (status === 304 || text.trim() === "") return status === 304 ? { notModified: true } : null
   const looksJson = (contentType ?? "").includes("json") || text.startsWith("{") || text.startsWith("[")
@@ -99,7 +108,7 @@ const sendRaw = (input: {
       )
     }
     const response = yield* HttpClient.execute(request).pipe(
-      Effect.mapError((error) => new TransportError({ message: `Request failed: ${String(error)}` }))
+      Effect.mapError((error) => new TransportError({ message: describeTransport(error) }))
     )
     const text = yield* response.text.pipe(
       Effect.mapError((error) => new TransportError({ message: `Could not read response body: ${String(error)}` }))
