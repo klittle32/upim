@@ -16,7 +16,7 @@
   },
   "type": "module",
   "bin": {
-    "upim": "./dist/main.js"
+    "upim": "dist/main.js"
   },
   "engines": {
     "node": ">=24"
