@@ -5,8 +5,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 
-.agents/*
-!.agents/skills/
-.agents/skills/*
-!.agents/skills/effect-ts/
+.agents/
 .letta/

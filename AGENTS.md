@@ -45,5 +45,3 @@ npm run check-suppressions
 npm test
 npm run verify
 ```
-
-The official `effect-ts` skill is vendored at `.agents/skills/effect-ts` (`npx skills add Effect-TS/skills --skill effect-ts -y --copy`). Do not install `effect-v3-to-v4`; this repository is already on Effect 4.
