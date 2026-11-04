@@ -1,4 +1,4 @@
-import { Clock, Effect, FileSystem, Option, Path, Schema, Stdio, Stream } from "effect"
+import { Clock, DateTime, Effect, FileSystem, Option, Path, Schema, Stdio, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { AppError } from "./errors.ts"
 import type { HttpClientEnv, StorageEnv } from "./client.ts"
@@ -36,6 +36,9 @@ import { ask, confirm } from "./prompt.ts"
 import { fillPath, mergeFilters, parsePair, parsePairs } from "./query.ts"
 import { installSkill, skillSource } from "./skill.ts"
 import { makeTokenStore, tokenIsFresh } from "./tokens.ts"
+
+/** ISO-8601 UTC for an epoch-millisecond instant. */
+const isoFromEpoch = (epochMillis: number) => DateTime.formatIso(DateTime.makeUnsafe(epochMillis))
 
 /** The version in package.json, one directory above dist/ or src/. */
 const packageVersion = Effect.gen(function*() {
@@ -505,7 +508,7 @@ const authCommand = Command.make("auth").pipe(
       yield* emit({
         profile: opened.name,
         tokenType: tokens.tokenType,
-        expiresAt: new Date(tokens.expiresAt).toISOString(),
+        expiresAt: isoFromEpoch(tokens.expiresAt),
         refreshTokenStored: tokens.refreshToken !== ""
       }, parent.json)
     })).pipe(Command.withDescription("Exchange the robot username and password for tokens")),
@@ -519,7 +522,7 @@ const authCommand = Command.make("auth").pipe(
       const now = yield* Clock.currentTimeMillis
       yield* emit({
         profile: name,
-        expiresAt: new Date(tokens.expiresAt).toISOString(),
+        expiresAt: isoFromEpoch(tokens.expiresAt),
         fresh: tokenIsFresh(tokens, now)
       }, parent.json)
     })).pipe(Command.withDescription("Refresh the access token, or fall back to the password grant")),
@@ -537,7 +540,7 @@ const authCommand = Command.make("auth").pipe(
         tokenPath: locations.tokenPath,
         authenticated: Boolean(tokens),
         fresh: tokens ? tokenIsFresh(tokens, now) : false,
-        expiresAt: tokens ? new Date(tokens.expiresAt).toISOString() : null,
+        expiresAt: tokens ? isoFromEpoch(tokens.expiresAt) : null,
         ...(flags.reveal && tokens ? { accessToken: tokens.accessToken } : {})
       }, parent.json)
     })).pipe(Command.withDescription("Show whether the saved token is still fresh")),

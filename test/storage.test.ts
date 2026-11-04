@@ -380,8 +380,10 @@ test("a lock that cannot be removed is reported, not swallowed", async () => {
   )))
   assert.equal(existsSync(lock), true)
   assert.equal(warnings.length, 1)
-  assert.ok(warnings[0].startsWith(`Could not remove the token lock ${lock}. The next process waits up to 30000 ms`), warnings[0])
-  assert.match(warnings[0], /PermissionDenied: FileSystem\.remove$/)
+  const warning = warnings[0]
+  assert.ok(warning !== undefined)
+  assert.ok(warning.startsWith(`Could not remove the token lock ${lock}. The next process waits up to 30000 ms`), warning)
+  assert.match(warning, /PermissionDenied: FileSystem\.remove$/)
 })
 
 test("an interrupted config write can be retried", async () => {

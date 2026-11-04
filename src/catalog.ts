@@ -295,23 +295,21 @@ export const resources: readonly Resource[] = [
   {
     name: "configurable-products",
     summary: "Configurable products",
-    actions: [
-      ...crud("/api/v1/rest/configurable-products", "sku").map((action) =>
-        action.name === "list" || action.name === "get"
-          ? {
-              ...action,
-              query: [
-                {
-                  kind: "boolean" as const,
-                  name: "with-completeness",
-                  param: "with_completeness",
-                  description: "Include completeness scores"
-                }
-              ]
-            }
-          : action
-      )
-    ]
+    actions: crud("/api/v1/rest/configurable-products", "sku").map((action) =>
+      action.name === "list" || action.name === "get"
+        ? {
+            ...action,
+            query: [
+              {
+                kind: "boolean" as const,
+                name: "with-completeness",
+                param: "with_completeness",
+                description: "Include completeness scores"
+              }
+            ]
+          }
+        : action
+    )
   },
   {
     name: "channels",
