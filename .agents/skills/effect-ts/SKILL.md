@@ -5,17 +5,17 @@ description: Use this skill when setting up a repository that uses the Effect Ty
 
 # Step 1: Install effect
 
-Use the users preferred package manager:
+This repository uses npm:
 
 ```
-pnpm add effect@latest
+npm install effect@latest
 ```
 
 If in a monorepo, install it as a dev dependency at the root, so you can access
 the source code from `node_modules/effect/src`.
 
 ```
-pnpm add -D effect@latest
+npm install -D effect@latest
 ```
 
 # Step 2: Update AGENTS.md / CLAUDE.md
