@@ -30,9 +30,13 @@
   "scripts": {
     "upim": "node src/main.ts",
     "check": "tsc --noEmit --pretty false",
+    "lint": "oxlint --deny-warnings --disable-nested-config",
+    "check-suppressions": "node scripts/check-suppressions.mjs",
+    "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
+    "verify": "npm run check && npm run lint && npm run check-suppressions && npm test",
     "test": "node --test test/*.test.ts",
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "effect-tsgo patch --typescript --no-oxlint && tsc -p tsconfig.build.json"
+    "prepare": "effect-tsgo patch --typescript --oxlint && tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "@effect/platform-node": "4.1.1",
@@ -41,6 +45,8 @@
   "devDependencies": {
     "@effect/tsgo": "0.63.0",
     "@types/node": "24.19.2",
+    "oxlint": "1.90.0",
+    "oxlint-tsgolint": "7.0.2005",
     "typescript": "7.0.2"
   },
   "license": "MIT"

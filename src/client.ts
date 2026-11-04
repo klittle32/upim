@@ -254,7 +254,7 @@ const with429 = <E, R>(attempt: Effect.Effect<CallResult, E, R>, seen = 0): Effe
   )
 
 const oneCall = (session: Session, input: CallInput, tokens: TokenSet | undefined) => {
-  const headers: Record<string, string> = { ...(input.headers ?? {}) }
+  const headers: Record<string, string> = { ...input.headers }
   if (input.auth !== false && tokens) headers.authorization = `Bearer ${tokens.accessToken}`
   return with429(sendRaw({
     method: input.method,

@@ -46,6 +46,17 @@ const jsonResponse = (status: number, body: unknown, headers: Record<string, str
     headers: { "content-type": "application/json", ...headers }
   })
 
+/** The URL from fetch's string, URL, or Request input. */
+const requestUrl = (input: Parameters<typeof fetch>[0]): string =>
+  typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+
+const requestBody = (body: BodyInit | null | undefined): string => {
+  if (typeof body === "string") return body
+  if (body instanceof Uint8Array) return new TextDecoder().decode(body)
+  if (body instanceof URLSearchParams) return body.toString()
+  throw new Error(`expected a string request body, got ${body === null ? "null" : typeof body}`)
+}
+
 test("refreshes once after 401 and retries the original request", async () => {
   const seen: string[] = []
   let saved: TokenSet | undefined = {
@@ -55,13 +66,13 @@ test("refreshes once after 401 and retries the original request", async () => {
     expiresAt: Date.now() + 3_600_000
   }
   const fetchImpl: typeof fetch = async (input, init) => {
-    const url = String(input)
+    const url = requestUrl(input)
     seen.push(`${init?.method ?? "GET"} ${url}`)
     if (url.endsWith("/oauth/token")) {
       assert.equal(init?.method, "POST")
       const header = new Headers(init?.headers).get("authorization") ?? ""
       assert.match(header, /^Basic /)
-      const body = JSON.parse(String(init?.body))
+      const body = JSON.parse(requestBody(init?.body))
       assert.equal(body.grant_type, "refresh_token")
       assert.equal(body.refresh_token, "refresh-1")
       return new Response(tokenBody("fresh"), { status: 200, headers: { "content-type": "application/json" } })
@@ -93,7 +104,7 @@ test("uses the tokens another process stored instead of refreshing again", async
     expiresAt: Date.now() + 3_600_000
   }
   const fetchImpl: typeof fetch = async (input, init) => {
-    if (String(input).endsWith("/oauth/token")) throw new Error("the loser must not refresh")
+    if (requestUrl(input).endsWith("/oauth/token")) throw new Error("the loser must not refresh")
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer from-the-winner")
     return jsonResponse(200, { data: [] })
   }
@@ -111,7 +122,7 @@ test("uses the tokens another process stored instead of refreshing again", async
 test("backs off on 429 and then returns the success body", async () => {
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
-    if (String(input).endsWith("/oauth/token")) {
+    if (requestUrl(input).endsWith("/oauth/token")) {
       return new Response(tokenBody("fresh"), { status: 200, headers: { "content-type": "application/json" } })
     }
     hits++
@@ -152,7 +163,7 @@ const collection = (data: readonly unknown[], next: string | null) =>
 test("aggregates every page when links.next is exhausted", async () => {
   const second = "https://pim.example.com/api/v1/rest/products?page=2"
   const fetchImpl: typeof fetch = async (input) => {
-    const url = String(input)
+    const url = requestUrl(input)
     if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
     if (url === second) return collection([{ sku: "b" }], null)
     throw new Error(url)
@@ -175,7 +186,7 @@ test("fails when maxPages leaves another page", async () => {
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
     hits++
-    const url = String(input)
+    const url = requestUrl(input)
     if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
     throw new Error(url)
   }
@@ -202,7 +213,7 @@ test("fails when links.next repeats instead of reporting completion", async () =
   let hits = 0
   const fetchImpl: typeof fetch = async (input) => {
     hits++
-    const url = String(input)
+    const url = requestUrl(input)
     if (url === "https://pim.example.com/api/v1/rest/products") return collection([{ sku: "a" }], second)
     if (url === second) return collection([{ sku: "b" }], second)
     throw new Error(url)
@@ -248,7 +259,7 @@ test("shares one token request across overlapping calls for the same session", a
   let oauthCalls = 0
   let saved: TokenSet | undefined
   const fetchImpl: typeof fetch = async (input) => {
-    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    if (!requestUrl(input).endsWith("/oauth/token")) throw new Error(requestUrl(input))
     oauthCalls++
     gate.mark()
     await gate.open
@@ -296,7 +307,7 @@ test("does not share token acquisition across sessions", async () => {
   })
   const seen: string[] = []
   const fetchImpl: typeof fetch = async (input, init) => {
-    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    if (!requestUrl(input).endsWith("/oauth/token")) throw new Error(requestUrl(input))
     const authorization = new Headers(init?.headers).get("authorization") ?? ""
     seen.push(authorization)
     pending++
@@ -335,7 +346,7 @@ test("a failed token acquisition can be retried", async () => {
   let oauthCalls = 0
   let saved: TokenSet | undefined
   const fetchImpl: typeof fetch = async (input) => {
-    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    if (!requestUrl(input).endsWith("/oauth/token")) throw new Error(requestUrl(input))
     oauthCalls++
     if (oauthCalls === 1) return jsonResponse(401, { message: "nope" })
     return new Response(tokenBody("fresh"), { status: 200, headers: { "content-type": "application/json" } })
@@ -363,7 +374,7 @@ test("cancelling one overlapping caller leaves the other with the shared token",
   let oauthCalls = 0
   let saved: TokenSet | undefined
   const fetchImpl: typeof fetch = async (input) => {
-    if (!String(input).endsWith("/oauth/token")) throw new Error(String(input))
+    if (!requestUrl(input).endsWith("/oauth/token")) throw new Error(requestUrl(input))
     oauthCalls++
     gate.mark()
     await gate.open
