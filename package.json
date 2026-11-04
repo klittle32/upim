@@ -30,7 +30,7 @@
   "scripts": {
     "upim": "node src/main.ts",
     "check": "tsc --noEmit --pretty false",
-    "lint": "oxlint --deny-warnings",
+    "lint": "oxlint --deny-warnings --disable-nested-config",
     "check-suppressions": "node scripts/check-suppressions.mjs",
     "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
     "verify": "npm run check && npm run lint && npm run check-suppressions && npm test",

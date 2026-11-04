@@ -12,7 +12,7 @@ If you need to learn more about particular Effect APIs and concepts that the gui
 
 A task is not done until `npm run verify` passes (`check`, `lint`, `check-suppressions`, and `test`).
 
-Do not add `oxlint-disable`, `@ts-ignore`, `@ts-expect-error`, or `@effect-diagnostics` comments unless the same line includes `--` and a reason. `npm run check-suppressions` fails the build otherwise.
+Do not add `oxlint-disable`, `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or `@effect-diagnostics` comments unless that comment includes `--` and a reason. `npm run check-suppressions` fails the build otherwise.
 
 ## Use Effect, not the platform globals
 
