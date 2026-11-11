@@ -37,7 +37,8 @@ These are errors under oxlint (`effecttsgo/*`) and under `tsc`. Tests (`test/**`
 ## Commands
 
 ```sh
-npm install          # patches tsc and oxlint (effect-tsgo patch --typescript --oxlint) and builds dist
+npm install          # patches tsc and oxlint (effect-tsgo patch --typescript --oxlint) and bundles dist/main.js
+npm run build        # Rolldown bundle of src/main.ts; tsc only type checks
 npm run check        # tsc, TypeScript 7, Effect diagnostics
 npm run lint         # oxlint --deny-warnings, recommended Effect preset, slip rules as errors
 npm run diagnostics  # same Effect diagnostics as check, as JSON

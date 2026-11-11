@@ -1,6 +1,6 @@
 # upim
 
-`upim` is a command-line client for the [UnoPim 3.1 REST API](https://devdocs.unopim.com/3.1/api/). It is meant for people and for coding agents. The runtime dependency is [Effect 4](https://effect.website/). Node.js 24 or newer runs the TypeScript entrypoint directly.
+`upim` is a command-line client for the [UnoPim 3.1 REST API](https://devdocs.unopim.com/3.1/api/). It is meant for people and for coding agents. It is written with [Effect 4](https://effect.website/) and published as one bundled file with no runtime dependencies. It needs Node.js 24 or newer.
 
 ## Install
 
@@ -216,9 +216,12 @@ Covered resources: attributes and options, attribute groups, families and varian
 ## Development
 
 ```bash
-npm test
-npm run check
+npm run upim -- --help   # run from source, no build step
+npm run verify           # check, lint, check-suppressions, test
+npm run build            # bundle src/ into dist/main.js with Rolldown
 ```
+
+`npm run build` writes `dist/main.js` and `dist/THIRD_PARTY_LICENSES.md`. It fails if the bundle would still import a package or would contain two copies of one. Effect is a dev dependency because the bundle carries it.
 
 ## Releasing
 
